@@ -229,6 +229,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\chainpilot-demo-se
 成功后会输出分析/决策/方案/执行/反馈/评测 ID，以及示例入口
 `/supply-chain?demo=supplier-delay`。
 
+后端任务历史默认只保留 24 小时，方案/执行/评测/反馈不受该任务保留策略影响。演示当天可重跑
+脚本；已有 `[DEMO-SEED]` 任务仍存在时会直接复用，不会重复写入。
+
 ## 模型配置与真实 Agent 前置条件
 
 1. 打开 `http://localhost:3000/system/model-config`（生产端口按实际配置）。
