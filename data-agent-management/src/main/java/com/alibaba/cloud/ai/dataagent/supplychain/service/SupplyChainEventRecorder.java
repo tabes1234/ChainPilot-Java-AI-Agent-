@@ -82,6 +82,11 @@ public class SupplyChainEventRecorder {
                 elapsedMillis(startedNanos), "task execution failed", errorType(failure));
     }
 
+    public void taskCancelled(String taskId, String stage) {
+        append(taskId, SupplyChainEventType.TASK_CANCELLED, stage, SupplyChainEventStatus.CANCELLED, null,
+                "task cancelled by user", null);
+    }
+
     public long nodeStarted(String taskId, String stage) {
         append(taskId, SupplyChainEventType.NODE_STARTED, stage, SupplyChainEventStatus.STARTED, null,
                 "node execution started", null);

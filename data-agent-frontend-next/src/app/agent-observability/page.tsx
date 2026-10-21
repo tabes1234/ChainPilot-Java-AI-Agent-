@@ -38,6 +38,7 @@ const STATUS_ITEMS: Record<string, string> = {
 	ALL: '全部状态',
 	COMPLETED: '已完成',
 	FAILED: '失败',
+	CANCELLED: '已取消',
 	RUNNING: '执行中',
 	ACCEPTED: '已接收',
 };
@@ -55,6 +56,7 @@ const PAGE_SIZES = [5, 8, 10, 20];
 function statusTone(status?: string) {
 	if (status === 'COMPLETED') return 'border-green-200 bg-green-50 text-green-700';
 	if (status === 'FAILED') return 'border-red-200 bg-red-50 text-red-700';
+	if (status === 'CANCELLED') return 'border-amber-200 bg-amber-50 text-amber-700';
 	if (status === 'RUNNING' || status === 'ACCEPTED') return 'border-blue-200 bg-blue-50 text-blue-700';
 	return 'border-gray-200 bg-gray-50 text-gray-600';
 }
@@ -171,6 +173,7 @@ export default function AgentObservabilityPage() {
 							<InlineStat label="已完成" value={summary.completedTasks} />
 							<InlineStat label="失败" value={summary.failedTasks} />
 							<InlineStat label="执行中" value={summary.runningTasks} />
+							<InlineStat label="已取消" value={summary.cancelledTasks} />
 							<InlineStat label="降级任务" value={summary.degradedTasks} />
 							<InlineStat label="工具调用 / 失败" value={`${summary.toolCalls} / ${summary.toolFailures}`} />
 							<InlineStat label="模型完成 / 失败" value={`${summary.modelCompletions} / ${summary.modelFailures}`} />

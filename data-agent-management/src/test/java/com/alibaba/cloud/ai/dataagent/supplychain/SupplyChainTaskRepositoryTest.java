@@ -74,6 +74,34 @@ class SupplyChainTaskRepositoryTest {
     }
 
     @Test
+    void cancellationAndCompletionAreConditionalAndTerminal() {
+        JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
+                "jdbc:h2:mem:chainpilot-cancel-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+        SupplyChainTaskRepository repository = new SupplyChainTaskRepository(jdbc,
+                new ObjectMapper().findAndRegisterModules());
+        Instant now = Instant.now();
+        repository.create(new SupplyChainTaskStatus("cancel-task", "ACCEPTED", "QUEUED", 0, null, now), "cancel");
+        assertTrue(repository.cancelIfActive("cancel-task"));
+        assertEquals("CANCELLED", repository.findTask("cancel-task").orElseThrow().status());
+        assertFalse(repository.cancelIfActive("cancel-task"));
+        repository.update(new SupplyChainTaskStatus("cancel-task", "RUNNING", "PLANNING", 0, null, now));
+        assertEquals("CANCELLED", repository.findTask("cancel-task").orElseThrow().status());
+        RiskAnalysisReport lateReport = new RiskAnalysisReport("cancel-task", "COMPLETED", "late", List.of(),
+                false, List.of(), List.of(), List.of(), List.of(), false, 0, now);
+        assertFalse(repository.completeAnalysis("cancel-task", lateReport, "DONE", 0));
+        assertTrue(repository.findReport("cancel-task").isEmpty());
+
+        repository.create(new SupplyChainTaskStatus("complete-task", "ACCEPTED", "QUEUED", 0, null, now), "complete");
+        RiskAnalysisReport report = new RiskAnalysisReport("complete-task", "COMPLETED", "done", List.of(),
+                false, List.of(), List.of(), List.of(), List.of(), false, 0, now);
+        assertTrue(repository.completeAnalysis("complete-task", report, "DONE", 0));
+        assertEquals("COMPLETED", repository.findTask("complete-task").orElseThrow().status());
+        assertFalse(repository.cancelIfActive("complete-task"));
+        assertEquals("COMPLETED", repository.findTask("complete-task").orElseThrow().status());
+        assertEquals(report, repository.findReport("complete-task").orElseThrow());
+    }
+
+    @Test
     void retentionKeepsTasksReferencedByDurableBusinessRecords() {
         JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
                 "jdbc:h2:mem:chainpilot-referenced-retention;DB_CLOSE_DELAY=-1", "sa", ""));

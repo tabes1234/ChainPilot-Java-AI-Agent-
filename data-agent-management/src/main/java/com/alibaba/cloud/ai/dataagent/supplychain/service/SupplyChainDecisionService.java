@@ -397,7 +397,11 @@ public class SupplyChainDecisionService {
     private DecisionProposal tryPropose(String taskId, ProposalActionType actionType, String title, String targetId,
             Map<String, Object> parameters, List<String> evidence) {
         try {
+            TaskCancellationRegistry.check(taskId);
             return proposalService.create(taskId, actionType, title, targetId, parameters, evidence);
+        }
+        catch (SupplyChainTaskCancelledException exception) {
+            throw exception;
         }
         catch (RuntimeException exception) {
             log.info("ChainPilot action proposal was not created. taskId={} action={} causeType={} message={}",

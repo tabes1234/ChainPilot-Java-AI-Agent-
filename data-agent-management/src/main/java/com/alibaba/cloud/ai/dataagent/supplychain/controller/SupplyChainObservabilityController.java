@@ -44,7 +44,7 @@ public class SupplyChainObservabilityController {
 
     private static final int MAX_PAGE_SIZE = 50;
 
-    private static final Set<String> STATUSES = Set.of("ACCEPTED", "RUNNING", "COMPLETED", "FAILED");
+    private static final Set<String> STATUSES = Set.of("ACCEPTED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED");
 
     private static final Set<String> MODES = Set.of("ANALYSIS", "DECISION");
 

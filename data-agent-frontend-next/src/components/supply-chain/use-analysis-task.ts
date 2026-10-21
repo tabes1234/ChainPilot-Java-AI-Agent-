@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
+	cancelTask,
 	fetchTask,
 	fetchTaskEvents,
 	submitTask,
@@ -21,6 +22,7 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 	const [events, setEvents] = useState<TaskEvent[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [submitting, setSubmitting] = useState(false);
+	const [cancelling, setCancelling] = useState(false);
 	const timerRef = useRef<number | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
 	const mountedRef = useRef(true);
@@ -140,6 +142,30 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 		}
 	};
 
+	const cancel = async () => {
+		if (!taskId) return null;
+		setCancelling(true);
+		try {
+			const status = await cancelTask(taskId);
+			if (!mountedRef.current) return status;
+			if (status.status === 'CANCELLED' || status.status === 'COMPLETED' || status.status === 'FAILED') {
+				stopPolling();
+				setTask(status);
+				setError(status.error ?? null);
+			}
+			return status;
+		} catch (cancelError) {
+			if (mountedRef.current) {
+				setError(friendlyErrorMessage(cancelError, '取消任务失败', {
+					404: '任务不存在或已被清理，请刷新任务记录。',
+				}));
+			}
+			return null;
+		} finally {
+			if (mountedRef.current) setCancelling(false);
+		}
+	};
+
 	const reset = () => {
 		stopPolling();
 		setTaskId(null);
@@ -150,5 +176,5 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 
 	const running = task?.status === 'ACCEPTED' || task?.status === 'RUNNING';
 
-	return { taskId, task, events, error, submitting, running, start, attach, reset, stopPolling };
+	return { taskId, task, events, error, submitting, cancelling, running, start, attach, cancel, reset, stopPolling };
 }

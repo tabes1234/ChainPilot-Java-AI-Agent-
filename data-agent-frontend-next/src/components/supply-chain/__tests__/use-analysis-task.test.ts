@@ -2,18 +2,22 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchTask, fetchTaskEvents } from '@/lib/api/supplyChain';
+import { cancelTask, fetchTask, fetchTaskEvents } from '@/lib/api/supplyChain';
 import { useAnalysisTask } from '@/components/supply-chain/use-analysis-task';
 
 vi.mock('@/lib/api/supplyChain', () => ({
 	fetchTask: vi.fn(),
 	fetchTaskEvents: vi.fn(),
+	cancelTask: vi.fn(),
 	submitTask: vi.fn(),
 }));
 
 function Probe({ taskId }: { taskId: string }) {
 	const state = useAnalysisTask(taskId);
-	return createElement('div', null, state.error ?? '');
+	return createElement('div', null,
+		createElement('span', { id: 'status' }, state.task?.status ?? ''),
+		createElement('button', { id: 'cancel', onClick: () => void state.cancel() }, 'cancel'),
+		createElement('span', { id: 'error' }, state.error ?? ''));
 }
 
 describe('useAnalysisTask polling lifecycle', () => {
@@ -24,6 +28,7 @@ describe('useAnalysisTask polling lifecycle', () => {
 		vi.useFakeTimers();
 		vi.mocked(fetchTask).mockReset();
 		vi.mocked(fetchTaskEvents).mockReset().mockResolvedValue([]);
+		vi.mocked(cancelTask).mockReset();
 	});
 
 	afterEach(() => {
@@ -77,6 +82,73 @@ describe('useAnalysisTask polling lifecycle', () => {
 			await vi.advanceTimersByTimeAsync(1_800);
 		});
 		expect(fetchTask).toHaveBeenCalledTimes(3);
+	});
+
+	it('cancels through the API, stops polling and shows the persisted terminal state', async () => {
+		vi.mocked(fetchTask).mockResolvedValue({
+			taskId: 'task-4', status: 'RUNNING', currentStep: 'QUERYING_ORDERS',
+			validationAttempts: 0, error: null, updatedAt: '2026-10-21T00:00:00Z',
+		});
+		vi.mocked(cancelTask).mockResolvedValue({
+			taskId: 'task-4', status: 'CANCELLED', currentStep: 'CANCELLED',
+			validationAttempts: 0, error: 'Cancelled by user', updatedAt: '2026-10-21T00:00:01Z',
+		});
+
+		const container = await render('task-4');
+		const callsBeforeCancel = vi.mocked(fetchTask).mock.calls.length;
+		await act(async () => {
+			(container.querySelector('#cancel') as HTMLButtonElement).click();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(cancelTask).toHaveBeenCalledWith('task-4');
+		expect(container.querySelector('#status')?.textContent).toBe('CANCELLED');
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10_000);
+		});
+		expect(fetchTask).toHaveBeenCalledTimes(callsBeforeCancel);
+	});
+
+	it('keeps polling and does not report cancellation success when the cancel request fails', async () => {
+		vi.mocked(fetchTask).mockResolvedValue({
+			taskId: 'task-5', status: 'RUNNING', currentStep: 'QUERYING_ORDERS',
+			validationAttempts: 0, error: null, updatedAt: '2026-10-21T00:00:00Z',
+		});
+		vi.mocked(cancelTask).mockRejectedValue({ status: 500, message: 'HTTP 500' });
+
+		const container = await render('task-5');
+		const callsBeforeCancel = vi.mocked(fetchTask).mock.calls.length;
+		await act(async () => {
+			(container.querySelector('#cancel') as HTMLButtonElement).click();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(container.querySelector('#status')?.textContent).toBe('RUNNING');
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+		expect(vi.mocked(fetchTask).mock.calls.length).toBeGreaterThan(callsBeforeCancel);
+	});
+
+	it('does not overwrite a completed outcome when cancel returns late', async () => {
+		vi.mocked(fetchTask).mockResolvedValue({
+			taskId: 'task-6', status: 'RUNNING', currentStep: 'QUERYING_ORDERS',
+			validationAttempts: 0, error: null, updatedAt: '2026-10-21T00:00:00Z',
+		});
+		vi.mocked(cancelTask).mockResolvedValue({
+			taskId: 'task-6', status: 'COMPLETED', currentStep: 'DONE',
+			validationAttempts: 0, error: null, updatedAt: '2026-10-21T00:00:01Z',
+		});
+
+		const container = await render('task-6');
+		await act(async () => {
+			(container.querySelector('#cancel') as HTMLButtonElement).click();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(container.querySelector('#status')?.textContent).toBe('COMPLETED');
 	});
 
 	it('clears the pending timer, aborts the active request and stops after unmount', async () => {

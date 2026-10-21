@@ -44,6 +44,7 @@ import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import com.alibaba.cloud.ai.graph.exception.GraphStateException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -54,7 +55,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 import static com.alibaba.cloud.ai.graph.StateGraph.START;
@@ -76,6 +79,7 @@ public class SupplyChainWorkflowService {
     private final SupplyChainEventRepository eventRepository;
     private final SupplyChainEventRecorder eventRecorder;
     private final Executor analysisExecutor;
+    private final Map<String, Future<?>> runningFutures = new ConcurrentHashMap<>();
     private final CompiledGraph workflow;
 
     public SupplyChainWorkflowService(SupplyChainAgentTools agentTools,
@@ -264,18 +268,30 @@ public class SupplyChainWorkflowService {
         String taskId = UUID.randomUUID().toString();
         pruneTasks();
         createTask(taskId, question, taskType);
+        TaskCancellationRegistry.begin(taskId);
         long queueStarted = System.nanoTime();
+        Runnable runnable = () -> {
+            try {
+                execute(taskId, question, taskType);
+            }
+            catch (RuntimeException exception) {
+                log.warn("ChainPilot asynchronous task failed. taskId={} type={}", taskId, taskType, exception);
+            }
+            finally {
+                runningFutures.remove(taskId);
+                TaskCancellationRegistry.end(taskId);
+            }
+        };
         try {
-            analysisExecutor.execute(() -> {
-                try {
-                    execute(taskId, question, taskType);
-                }
-                catch (RuntimeException exception) {
-                    log.warn("ChainPilot asynchronous task failed. taskId={} type={}", taskId, taskType, exception);
-                }
-            });
+            if (analysisExecutor instanceof ThreadPoolTaskExecutor executor) {
+                runningFutures.put(taskId, executor.submit(runnable));
+            }
+            else {
+                analysisExecutor.execute(runnable);
+            }
         }
         catch (RuntimeException exception) {
+            TaskCancellationRegistry.end(taskId);
             updateTask(taskId, SupplyChainTaskState.FAILED, "QUEUE_REJECTED", 0, "Analysis queue is full; retry later");
             eventRecorder.taskFailed(taskId, "QUEUE", queueStarted, exception);
             throw exception;
@@ -283,16 +299,48 @@ public class SupplyChainWorkflowService {
         return task(taskId);
     }
 
+    /**
+     * Cancels an active task. The database transition is the source of truth; the in-memory
+     * signal and Future interrupt only stop subsequent checkpoints. In-flight provider calls
+     * that cannot be aborted are allowed to return, but their result is never persisted.
+     */
+    public SupplyChainTaskStatus cancel(String taskId) {
+        SupplyChainTaskStatus current = task(taskId);
+        if (SupplyChainTaskState.CANCELLED.equals(current.status())
+                || SupplyChainTaskState.COMPLETED.equals(current.status())
+                || SupplyChainTaskState.FAILED.equals(current.status())) {
+            return current;
+        }
+        if (!taskRepository.cancelIfActive(taskId)) {
+            return task(taskId);
+        }
+        TaskCancellationRegistry.request(taskId);
+        Future<?> future = runningFutures.remove(taskId);
+        if (future != null) {
+            future.cancel(true);
+        }
+        eventRecorder.taskCancelled(taskId, "WORKFLOW");
+        return task(taskId);
+    }
+
     private void execute(String taskId, String question, String taskType) {
+        SupplyChainTaskStatus initial = taskRepository.findTask(taskId).orElse(null);
+        if (initial == null || SupplyChainTaskState.CANCELLED.equals(initial.status())
+                || TaskCancellationRegistry.isRequested(taskId)) {
+            return;
+        }
         long started = eventRecorder.taskStarted(taskId);
         try {
             OverAllState result = workflow.invoke(Map.of("taskId", taskId, "question", question,
                     "taskType", taskType, "retryCount", 0),
                     RunnableConfig.builder().threadId(taskId).build()).orElseThrow();
+            ensureActive(taskId);
             if (SupplyChainTaskType.DECISION.equals(taskType)) {
                 DecisionTaskResult decision = restoreDecision(taskId, question, result);
-                taskRepository.saveDecision(decision);
-                updateTask(taskId, SupplyChainTaskState.COMPLETED, "DONE", 0, null);
+                ensureActive(taskId);
+                if (!taskRepository.completeDecision(taskId, decision, "DONE", 0)) {
+                    return;
+                }
                 eventRecorder.taskCompleted(taskId, started, "decision intent=" + decision.intent()
                         + ", narrativeSource=" + decision.narrativeSource() + ", proposals="
                         + decision.proposals().size());
@@ -306,8 +354,10 @@ public class SupplyChainWorkflowService {
             }
             try {
                 RiskAnalysisReport restored = objectMapper.readValue(report.get(), RiskAnalysisReport.class);
-                taskRepository.saveReport(restored);
-                updateTask(taskId, SupplyChainTaskState.COMPLETED, "DONE", task(taskId).validationAttempts(), null);
+                ensureActive(taskId);
+                if (!taskRepository.completeAnalysis(taskId, restored, "DONE", task(taskId).validationAttempts())) {
+                    return;
+                }
                 eventRecorder.taskCompleted(taskId, started, "report generated; modelAssisted="
                         + restored.modelAssisted() + ", plannerAssisted=" + restored.plannerAssisted());
             }
@@ -316,16 +366,42 @@ public class SupplyChainWorkflowService {
             }
         }
         catch (RuntimeException exception) {
+            if (exception instanceof SupplyChainTaskCancelledException || isCancelled(taskId)) {
+                log.info("ChainPilot task stopped at a cancellation checkpoint. taskId={}", taskId);
+                return;
+            }
             SupplyChainTaskStatus current = task(taskId);
-            if (!SupplyChainTaskState.FAILED.equals(current.status())) {
+            if (!SupplyChainTaskState.FAILED.equals(current.status())
+                    && !SupplyChainTaskState.COMPLETED.equals(current.status())) {
                 log.warn("ChainPilot task failed. taskId={} step={} causeType={}", taskId,
                         current.currentStep(), exception.getClass().getSimpleName());
                 updateTask(taskId, SupplyChainTaskState.FAILED, current.currentStep(), current.validationAttempts(),
                         "Analysis failed; check application logs using the task ID");
+                current = task(taskId);
             }
-            eventRecorder.taskFailed(taskId, current.currentStep(), started, exception);
+            if (SupplyChainTaskState.FAILED.equals(current.status())) {
+                eventRecorder.taskFailed(taskId, current.currentStep(), started, exception);
+            }
             throw exception;
         }
+    }
+
+    private void ensureActive(String taskId) {
+        TaskCancellationRegistry.check(taskId);
+        SupplyChainTaskStatus status = taskRepository.findTask(taskId)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown ChainPilot task: " + taskId));
+        if (SupplyChainTaskState.CANCELLED.equals(status.status())) {
+            throw new SupplyChainTaskCancelledException(taskId);
+        }
+    }
+
+    private boolean isCancelled(String taskId) {
+        if (TaskCancellationRegistry.isRequested(taskId)) {
+            return true;
+        }
+        return taskRepository.findTask(taskId)
+            .map(status -> SupplyChainTaskState.CANCELLED.equals(status.status()))
+            .orElse(false);
     }
 
     private DecisionTaskResult restoreDecision(String taskId, String question, OverAllState result) {
@@ -458,13 +534,18 @@ public class SupplyChainWorkflowService {
         return AsyncNodeAction.node_async(state -> {
             String taskId = state.value("taskId", "");
             try (SupplyChainEventRecorder.TaskScope ignored = eventRecorder.openTask(taskId)) {
+                TaskCancellationRegistry.check(taskId);
                 long started = eventRecorder.nodeStarted(taskId, stage);
                 try {
                     NodeResult result = body.run(state);
+                    TaskCancellationRegistry.check(taskId);
                     eventRecorder.nodeCompleted(taskId, stage, started, result.summary());
                     return result.output();
                 }
                 catch (Exception exception) {
+                    if (exception instanceof SupplyChainTaskCancelledException) {
+                        throw exception;
+                    }
                     eventRecorder.nodeFailed(taskId, stage, started, exception);
                     throw exception;
                 }

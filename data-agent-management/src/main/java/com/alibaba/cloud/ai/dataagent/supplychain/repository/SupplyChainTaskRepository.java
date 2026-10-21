@@ -73,7 +73,7 @@ public class SupplyChainTaskRepository {
         // A process restart cannot resume an in-flight Graph invocation. Make this explicit in history.
         jdbc.update("UPDATE " + TABLE + " SET status='FAILED', current_step='INTERRUPTED_BY_RESTART', "
                 + "error_message='Application restarted before analysis completed', updated_at=? "
-                + "WHERE status NOT IN ('COMPLETED','FAILED')", Instant.now().toEpochMilli());
+                + "WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED')", Instant.now().toEpochMilli());
     }
 
     /** Adds a column to databases created by an earlier release; CREATE TABLE IF NOT EXISTS skips them. */
@@ -110,9 +110,42 @@ public class SupplyChainTaskRepository {
 
     public void update(SupplyChainTaskStatus status) {
         jdbc.update("UPDATE " + TABLE + " SET status=?, current_step=?, validation_attempts=?, error_message=?, "
-                        + "updated_at=? WHERE task_id=? AND status NOT IN ('COMPLETED','FAILED')",
+                        + "updated_at=? WHERE task_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",
                 status.status(), status.currentStep(), status.validationAttempts(), status.error(),
                 status.updatedAt().toEpochMilli(), status.taskId());
+    }
+
+    /** Atomically cancels only an active task; terminal tasks keep their existing outcome. */
+    public boolean cancelIfActive(String taskId) {
+        return jdbc.update("UPDATE " + TABLE + " SET status='CANCELLED', current_step='CANCELLED', "
+                        + "error_message='Cancelled by user', updated_at=? "
+                        + "WHERE task_id=? AND status IN ('ACCEPTED','RUNNING')",
+                Instant.now().toEpochMilli(), taskId) > 0;
+    }
+
+    /** Completion and payload persistence share one conditional statement, so cancellation wins or success wins. */
+    public boolean completeAnalysis(String taskId, RiskAnalysisReport report, String step, int attempts) {
+        try {
+            return jdbc.update("UPDATE " + TABLE + " SET status='COMPLETED', current_step=?, validation_attempts=?, "
+                            + "error_message=NULL, updated_at=?, report_json=? "
+                            + "WHERE task_id=? AND task_type='ANALYSIS' AND status IN ('ACCEPTED','RUNNING')",
+                    step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(report), taskId) > 0;
+        }
+        catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Unable to persist ChainPilot report", exception);
+        }
+    }
+
+    public boolean completeDecision(String taskId, DecisionTaskResult result, String step, int attempts) {
+        try {
+            return jdbc.update("UPDATE " + TABLE + " SET status='COMPLETED', current_step=?, validation_attempts=?, "
+                            + "error_message=NULL, updated_at=?, decision_json=? "
+                            + "WHERE task_id=? AND task_type='DECISION' AND status IN ('ACCEPTED','RUNNING')",
+                    step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(result), taskId) > 0;
+        }
+        catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Unable to persist ChainPilot decision result", exception);
+        }
     }
 
     public List<SupplyChainTaskSummary> findRecent(int limit) {
@@ -198,7 +231,7 @@ public class SupplyChainTaskRepository {
     public void saveReport(RiskAnalysisReport report) {
         try {
             jdbc.update("UPDATE " + TABLE + " SET report_json=? WHERE task_id=? AND task_type='ANALYSIS' "
-                            + "AND status NOT IN ('FAILED')",
+                            + "AND status NOT IN ('FAILED','CANCELLED')",
                     mapper.writeValueAsString(report), report.taskId());
         }
         catch (JsonProcessingException exception) {
@@ -224,7 +257,7 @@ public class SupplyChainTaskRepository {
     public void saveDecision(DecisionTaskResult result) {
         try {
             jdbc.update("UPDATE " + TABLE + " SET decision_json=? WHERE task_id=? AND task_type='DECISION' "
-                            + "AND status NOT IN ('FAILED')",
+                            + "AND status NOT IN ('FAILED','CANCELLED')",
                     mapper.writeValueAsString(result), result.taskId());
         }
         catch (JsonProcessingException exception) {
@@ -256,7 +289,7 @@ public class SupplyChainTaskRepository {
         Set<String> referenced = referencedTaskIds();
         long cutoff = Instant.now().minus(retention).toEpochMilli();
         List<String> expired = jdbc.query("SELECT task_id FROM " + TABLE
-                        + " WHERE status IN ('COMPLETED','FAILED') AND updated_at < ?",
+                        + " WHERE status IN ('COMPLETED','FAILED','CANCELLED') AND updated_at < ?",
                 (rs, row) -> rs.getString(1), cutoff);
         expired.stream()
             .filter(id -> !referenced.contains(id))
@@ -265,7 +298,7 @@ public class SupplyChainTaskRepository {
         int excess = Math.max(0, (count == null ? 0 : count) - maxRetained);
         if (excess > 0) {
             List<String> terminalIds = jdbc.query("SELECT task_id FROM " + TABLE
-                            + " WHERE status IN ('COMPLETED','FAILED') ORDER BY updated_at ASC",
+                            + " WHERE status IN ('COMPLETED','FAILED','CANCELLED') ORDER BY updated_at ASC",
                     (rs, row) -> rs.getString(1));
             terminalIds.stream()
                 .filter(id -> !referenced.contains(id))
@@ -275,7 +308,7 @@ public class SupplyChainTaskRepository {
     }
 
     private void deleteTerminalTask(String taskId) {
-        jdbc.update("DELETE FROM " + TABLE + " WHERE task_id=? AND status IN ('COMPLETED','FAILED')", taskId);
+        jdbc.update("DELETE FROM " + TABLE + " WHERE task_id=? AND status IN ('COMPLETED','FAILED','CANCELLED')", taskId);
         if (tableExists("chainpilot_task_event")) {
             jdbc.update("DELETE FROM chainpilot_task_event WHERE task_id=?", taskId);
         }

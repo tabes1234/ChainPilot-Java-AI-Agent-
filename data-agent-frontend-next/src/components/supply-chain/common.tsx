@@ -16,6 +16,7 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
 	RUNNING: '执行中',
 	COMPLETED: '已完成',
 	FAILED: '失败',
+	CANCELLED: '已取消',
 };
 
 export function RiskBadge({ level }: { level?: RiskLevel }) {
@@ -30,6 +31,8 @@ export function StatusBadge({ status }: { status?: string }) {
 			? 'border-green-200 bg-green-50 text-green-700'
 			: status === 'FAILED' || status === 'REJECTED' || status === 'EXPIRED'
 				? 'border-red-200 bg-red-50 text-red-700'
+				: status === 'CANCELLED'
+				? 'border-amber-200 bg-amber-50 text-amber-700'
 				: status === 'RUNNING' || status === 'EXECUTING' || status === 'PROCESSING'
 					? 'border-blue-200 bg-blue-50 text-blue-700'
 					: 'border-gray-200 bg-gray-50 text-gray-600';

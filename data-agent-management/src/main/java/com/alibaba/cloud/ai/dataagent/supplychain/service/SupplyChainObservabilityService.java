@@ -97,6 +97,7 @@ public class SupplyChainObservabilityService {
         int completed = 0;
         int failed = 0;
         int running = 0;
+        int cancelled = 0;
         int degraded = 0;
         int toolCalls = 0;
         int toolFailures = 0;
@@ -120,6 +121,9 @@ public class SupplyChainObservabilityService {
                 if (StringUtils.hasText(task.summary().failureType())) {
                     failureTypes.merge(task.summary().failureType(), 1, Integer::sum);
                 }
+            }
+            else if ("CANCELLED".equals(task.task().status())) {
+                cancelled++;
             }
             else {
                 running++;
@@ -148,7 +152,7 @@ public class SupplyChainObservabilityService {
         Double averageDuration = tasksWithDuration == 0 ? null
                 : Math.round((double) durationTotal / tasksWithDuration * 10.0) / 10.0;
         return new ObservabilitySummary(Instant.now(), scope(tasks.size()), tasks.size(), parsed.size(), completed,
-                failed, running, degraded, toolCalls, toolFailures, modelCompletions, modelFailures, fallbackEvents,
+                failed, running, cancelled, degraded, toolCalls, toolFailures, modelCompletions, modelFailures, fallbackEvents,
                 modelVerified, legacy, deterministic, tasksWithDuration, averageDuration, failureTypes,
                 narrativeSources, limitations());
     }

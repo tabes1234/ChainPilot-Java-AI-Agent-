@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { useUrlParam } from '@/lib/use-url-param';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Loader2, Play, RefreshCw } from 'lucide-react';
+import { Loader2, Play, RefreshCw, Square } from 'lucide-react';
+import { toast } from 'sonner';
 import { PageHeader } from '@/components/page-header';
 import { ErrorState, LoadingState } from '@/components/data-states';
 import { Badge } from '@/components/ui/badge';
@@ -60,6 +61,27 @@ export default function DecisionWorkspaceView() {
 		void taskRunner.start(question.trim(), 'DECISION');
 	};
 
+	const cancel = async () => {
+		const status = await taskRunner.cancel();
+		if (!status) {
+			toast.error('取消请求失败', { description: '任务可能仍在执行，请刷新任务状态确认。' });
+			return;
+		}
+		if (status.status === 'CANCELLED') {
+			toast.success('任务已取消');
+			void recentTasksQuery.refetch();
+		}
+		else if (status.status === 'COMPLETED') {
+			toast.info('任务已完成，无法取消');
+		}
+		else if (status.status === 'FAILED') {
+			toast.info('任务已失败，未执行取消');
+		}
+		else {
+			toast.error('任务未能取消', { description: `当前状态：${status.status}` });
+		}
+	};
+
 	const recentTasks = (recentTasksQuery.data?.items ?? []).filter((item) =>
 		keyword.trim() ? item.question.toLowerCase().includes(keyword.trim().toLowerCase()) : true,
 	);
@@ -96,7 +118,15 @@ export default function DecisionWorkspaceView() {
 			<Section
 				title="决策输入"
 				description="任务以后端 DECISION 模式异步执行"
-				actions={taskRunner.running ? <Badge variant="secondary" className="gap-1"><Loader2 className="h-3 w-3 animate-spin" />执行中</Badge> : undefined}
+				actions={taskRunner.running ? (
+					<div className="flex flex-wrap items-center gap-2">
+						<Badge variant="secondary" className="gap-1"><Loader2 className="h-3 w-3 animate-spin" />执行中</Badge>
+						<Button size="sm" variant="outline" disabled={taskRunner.cancelling} onClick={() => void cancel()}>
+							<Square className="mr-1 h-3 w-3" />
+							{taskRunner.cancelling ? '取消中…' : '停止任务'}
+						</Button>
+					</div>
+				) : undefined}
 			>
 				<div className="space-y-3">
 					<Textarea rows={3} maxLength={2000} value={question} onChange={(event) => setQuestion(event.target.value)} />

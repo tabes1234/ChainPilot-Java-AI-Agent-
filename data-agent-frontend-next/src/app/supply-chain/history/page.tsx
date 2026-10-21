@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import { PageHeader } from '@/components/page-header';
 import { EmptyState, ErrorState, LoadingState } from '@/components/data-states';
 import { Badge } from '@/components/ui/badge';
@@ -12,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { errorMessage } from '@/lib/api/client';
-import { fetchTaskEvents, fetchTasks, type AnalysisMode } from '@/lib/api/supplyChain';
+import { cancelTask, fetchTaskEvents, fetchTasks, type AnalysisMode } from '@/lib/api/supplyChain';
 import { StatusBadge, TASK_STATUS_LABELS, formatTime } from '@/components/supply-chain/common';
 
 const STATUS_ITEMS: Record<string, string> = {
@@ -21,6 +22,7 @@ const STATUS_ITEMS: Record<string, string> = {
 	RUNNING: '执行中',
 	COMPLETED: '已完成',
 	FAILED: '失败',
+	CANCELLED: '已取消',
 };
 const MODE_ITEMS: Record<string, string> = { ANALYSIS: '风险分析任务', DECISION: '决策任务' };
 const PAGE_SIZES = [5, 8, 10, 20];
@@ -32,6 +34,7 @@ export default function HistoryPage() {
 	const [page, setPage] = useState(1);
 	const [pageSize, setPageSize] = useState(8);
 	const [expandedTask, setExpandedTask] = useState<string | null>(null);
+	const [cancellingTask, setCancellingTask] = useState<string | null>(null);
 
 	const tasksQuery = useQuery({
 		queryKey: ['taskHistory', mode, status, page, pageSize],
@@ -44,6 +47,23 @@ export default function HistoryPage() {
 	});
 
 	const data = tasksQuery.data;
+
+	const cancel = async (taskId: string) => {
+		setCancellingTask(taskId);
+		try {
+			const status = await cancelTask(taskId);
+			if (status.status === 'CANCELLED') toast.success('任务已取消');
+			else if (status.status === 'COMPLETED') toast.info('任务已完成，无法取消');
+			else if (status.status === 'FAILED') toast.info('任务已失败，未执行取消');
+			else toast.error('任务未能取消', { description: `当前状态：${status.status}` });
+			await tasksQuery.refetch();
+			if (expandedTask === taskId) await eventsQuery.refetch();
+		} catch (error) {
+			toast.error('取消请求失败', { description: errorMessage(error, '任务可能仍在执行') });
+		} finally {
+			setCancellingTask(null);
+		}
+	};
 
 	return (
 		<div className="space-y-6">
@@ -76,6 +96,7 @@ export default function HistoryPage() {
 							<SelectItem value="RUNNING">执行中</SelectItem>
 							<SelectItem value="COMPLETED">已完成</SelectItem>
 							<SelectItem value="FAILED">失败</SelectItem>
+							<SelectItem value="CANCELLED">已取消</SelectItem>
 						</SelectContent>
 					</Select>
 					<Select items={PAGE_SIZE_ITEMS} value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value ?? 8)); setPage(1); }}>
@@ -136,13 +157,27 @@ export default function HistoryPage() {
 												<TableCell className="whitespace-nowrap text-xs text-[#5a708c]">{formatTime(item.updatedAt)}</TableCell>
 												<TableCell>
 													<div className="flex flex-wrap justify-end gap-1">
-														<Link href={mode === 'ANALYSIS' ? `/supply-chain?taskId=${encodeURIComponent(item.taskId)}` : `/supply-chain/decision?taskId=${encodeURIComponent(item.taskId)}`}>
-															<Button size="sm" variant="outline">{mode === 'ANALYSIS' ? '查看报告' : '查看决策'}</Button>
-														</Link>
-														{mode === 'DECISION' && (
+														{item.reportAvailable ? (
+															<Link href={mode === 'ANALYSIS' ? `/supply-chain?taskId=${encodeURIComponent(item.taskId)}` : `/supply-chain/decision?taskId=${encodeURIComponent(item.taskId)}`}>
+																<Button size="sm" variant="outline">{mode === 'ANALYSIS' ? '查看报告' : '查看决策'}</Button>
+															</Link>
+														) : (
+															<Button size="sm" variant="outline" disabled>无报告</Button>
+														)}
+														{mode === 'DECISION' && item.reportAvailable && (
 															<Link href={`/supply-chain/disposal?taskId=${encodeURIComponent(item.taskId)}`}>
 																<Button size="sm" variant="outline">处置工作台</Button>
 															</Link>
+														)}
+														{(item.status === 'ACCEPTED' || item.status === 'RUNNING') && (
+															<Button
+																size="sm"
+																variant="outline"
+																disabled={cancellingTask === item.taskId}
+																onClick={() => void cancel(item.taskId)}
+															>
+																{cancellingTask === item.taskId ? '取消中…' : '取消任务'}
+															</Button>
 														)}
 														<Button
 															size="sm"

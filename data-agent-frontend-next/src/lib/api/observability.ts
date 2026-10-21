@@ -10,6 +10,7 @@ export type ObservabilitySummary = {
 	completedTasks: number;
 	failedTasks: number;
 	runningTasks: number;
+	cancelledTasks: number;
 	degradedTasks: number;
 	toolCalls: number;
 	toolFailures: number;

@@ -26,6 +26,8 @@ public final class SupplyChainEventType {
 
     public static final String TASK_FAILED = "TASK_FAILED";
 
+    public static final String TASK_CANCELLED = "TASK_CANCELLED";
+
     public static final String NODE_STARTED = "NODE_STARTED";
 
     public static final String NODE_COMPLETED = "NODE_COMPLETED";

@@ -26,6 +26,8 @@ public final class SupplyChainEventStatus {
 
     public static final String FAILED = "FAILED";
 
+    public static final String CANCELLED = "CANCELLED";
+
     public static final String FALLBACK = "FALLBACK";
 
     private SupplyChainEventStatus() {

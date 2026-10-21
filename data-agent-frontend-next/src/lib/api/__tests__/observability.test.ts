@@ -26,6 +26,7 @@ describe('agent observability API', () => {
 				completedTasks: 0,
 				failedTasks: 0,
 				runningTasks: 0,
+				cancelledTasks: 0,
 				degradedTasks: 0,
 				toolCalls: 0,
 				toolFailures: 0,

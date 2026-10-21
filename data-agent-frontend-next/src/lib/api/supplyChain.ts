@@ -8,7 +8,7 @@ import { api, errorMessage } from './client';
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 export type OrderStatus = 'CREATED' | 'CONFIRMED' | 'IN_TRANSIT' | 'DELAYED' | 'DELIVERED';
 export type AnalysisMode = 'ANALYSIS' | 'DECISION';
-export type TaskState = 'ACCEPTED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+export type TaskState = 'ACCEPTED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 export type SimulationScenario = 'INVENTORY_REPLENISHMENT' | 'SUPPLIER_DELAY';
 export type DisposalPriority = 'P1' | 'P2' | 'P3';
 export type DisposalActionType = 'REPLENISH_INVENTORY' | 'FOLLOW_UP_SUPPLIER' | 'MANUAL_CONFIRMATION';
@@ -556,6 +556,10 @@ export async function fetchTask(taskId: string, options?: { signal?: AbortSignal
 
 export async function fetchTaskEvents(taskId: string, options?: { signal?: AbortSignal }): Promise<TaskEvent[]> {
 	return api.get<TaskEvent[]>(`/api/supply-chain/analysis/tasks/${encodeURIComponent(taskId)}/events`, options);
+}
+
+export async function cancelTask(taskId: string): Promise<TaskStatus> {
+	return api.post<TaskStatus>(`/api/supply-chain/analysis/tasks/${encodeURIComponent(taskId)}/cancel`);
 }
 
 export async function fetchReport(taskId: string): Promise<RiskAnalysisReport> {

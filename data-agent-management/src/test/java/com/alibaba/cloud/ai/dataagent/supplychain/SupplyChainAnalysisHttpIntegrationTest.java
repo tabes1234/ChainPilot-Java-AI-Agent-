@@ -95,6 +95,31 @@ class SupplyChainAnalysisHttpIntegrationTest {
     }
 
     @Test
+    void cancellingACompletedTaskKeepsItsOutcomeAndIsIdempotent() {
+        String taskId = submit("分析今天有哪些订单可能延期");
+        SupplyChainTaskStatus completed = awaitTerminal(taskId);
+        assertEquals("COMPLETED", completed.status());
+
+        SupplyChainTaskStatus first = cancel(taskId);
+        SupplyChainTaskStatus second = cancel(taskId);
+
+        assertEquals("COMPLETED", first.status());
+        assertEquals("COMPLETED", second.status());
+        assertEquals("COMPLETED", status(taskId).status());
+        assertFalse(events(taskId).stream()
+            .anyMatch(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type())));
+    }
+
+    @Test
+    void cancellingAnUnknownTaskReturnsNotFound() {
+        webTestClient.post()
+            .uri("/api/supply-chain/analysis/tasks/{taskId}/cancel", "missing-task")
+            .exchange()
+            .expectStatus()
+            .isNotFound();
+    }
+
+    @Test
     void asyncAnalysisIsPersistedAndReadableThroughHistoryAndReport() {
         String taskId = submit("分析今天有哪些订单可能延期");
 
@@ -302,10 +327,23 @@ class SupplyChainAnalysisHttpIntegrationTest {
     private SupplyChainTaskStatus awaitTerminal(String taskId) {
         await().atMost(TERMINAL_TIMEOUT).pollInterval(Duration.ofMillis(100)).untilAsserted(() -> {
             SupplyChainTaskStatus status = status(taskId);
-            assertTrue(Set.of("COMPLETED", "FAILED").contains(status.status()),
+            assertTrue(Set.of("COMPLETED", "FAILED", "CANCELLED").contains(status.status()),
                     () -> "Task " + taskId + " is still " + status.status() + "/" + status.currentStep());
         });
         return status(taskId);
+    }
+
+    private SupplyChainTaskStatus cancel(String taskId) {
+        SupplyChainTaskStatus status = webTestClient.post()
+            .uri("/api/supply-chain/analysis/tasks/{taskId}/cancel", taskId)
+            .exchange()
+            .expectStatus()
+            .isOk()
+            .expectBody(SupplyChainTaskStatus.class)
+            .returnResult()
+            .getResponseBody();
+        assertNotNull(status);
+        return status;
     }
 
     private SupplyChainTaskStatus status(String taskId) {

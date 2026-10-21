@@ -21,7 +21,7 @@ import java.util.Map;
 
 /** Read-only aggregate over a bounded window of analysis and decision tasks. */
 public record ObservabilitySummary(Instant generatedAt, String scope, int windowSize, int totalTasks,
-        int completedTasks, int failedTasks, int runningTasks, int degradedTasks, int toolCalls,
+        int completedTasks, int failedTasks, int runningTasks, int cancelledTasks, int degradedTasks, int toolCalls,
         int toolFailures, int modelCompletions, int modelFailures, int fallbackEvents,
         int modelVerifiedTasks, int legacyUnverifiedTasks, int deterministicFallbackTasks,
         int tasksWithDuration, Double averageDurationMs, Map<String, Integer> failureTypes,

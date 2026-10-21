@@ -235,15 +235,20 @@ public class SupplyChainAgentTools {
 
     private <T> T invoke(String operation, SupplyChainEventRecorder.ToolSource source, ToolCall<T> call) {
         String taskId = eventRecorder.currentTaskId();
+        TaskCancellationRegistry.check(taskId);
         long started = eventRecorder.toolStarted(taskId, operation, source);
         log.info("ChainPilot {} tool started: {}", source.name().toLowerCase(), operation);
         try {
             T result = call.run();
+            TaskCancellationRegistry.check(taskId);
             eventRecorder.toolCompleted(taskId, operation, started, summarize(result), source);
             log.info("ChainPilot {} tool completed: {}", source.name().toLowerCase(), operation);
             return result;
         }
         catch (RuntimeException exception) {
+            if (exception instanceof SupplyChainTaskCancelledException) {
+                throw exception;
+            }
             eventRecorder.toolFailed(taskId, operation, started, exception, source);
             log.error("ChainPilot {} tool failed: {}", source.name().toLowerCase(), operation, exception);
             throw exception;

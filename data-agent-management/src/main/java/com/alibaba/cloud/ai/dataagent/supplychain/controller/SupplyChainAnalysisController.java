@@ -157,6 +157,16 @@ public class SupplyChainAnalysisController {
         }
     }
 
+    @PostMapping("/tasks/{taskId}/cancel")
+    public SupplyChainTaskStatus cancel(@PathVariable String taskId) {
+        try {
+            return workflowService.cancel(taskId);
+        }
+        catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Analysis task not found", exception);
+        }
+    }
+
     @GetMapping("/tasks/{taskId}/events")
     public List<SupplyChainTaskEvent> events(@PathVariable String taskId) {
         try {

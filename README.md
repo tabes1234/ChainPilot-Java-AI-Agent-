@@ -231,7 +231,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\chainpilot-demo-se
 
 后端任务历史采用引用保护策略：未被方案、提案、反馈或评测结果引用的终态任务默认保留 24 小时、
 最多 1000 条；被持久业务记录引用的任务会随业务记录保留，避免产生失效 taskId。清理无引用任务时，
-其持久化事件一并删除。演示当天可重跑脚本；已有 `[DEMO-SEED]` 任务仍存在时会直接复用，不会重复写入。
+其持久化事件一并删除。任务取消采用数据库原子状态转换：只有 `ACCEPTED/RUNNING` 可转为 `CANCELLED`；
+成功/失败/已取消任务的重复取消只返回当前终态，不会覆盖。执行流程在节点、工具和持久化前检查取消信号；
+无法物理中止的在途模型请求返回后也不会被写成成功结果。演示当天可重跑脚本；已有 `[DEMO-SEED]` 任务仍存在时会直接复用，不会重复写入。
 
 ## 模型配置与真实 Agent 前置条件
 
@@ -268,6 +270,7 @@ provider usage 或 `MODEL_VERIFIED` 运行证据；不能把假模型测试或�
 | --- | --- | --- |
 | `POST` | `/api/supply-chain/analysis/tasks` | 提交异步供应链分析任务 |
 | `GET` | `/api/supply-chain/analysis/tasks` | 任务历史，支持状态筛选与分页 |
+| `POST` | `/api/supply-chain/analysis/tasks/{taskId}/cancel` | 取消排队/执行中的任务；终态任务幂等返回 |
 | `GET` | `/api/supply-chain/analysis/tasks/{taskId}/report` | 读取报告 |
 | `GET` | `/api/supply-chain/analysis/tasks/{taskId}/events` | 读取真实任务事件 |
 | `GET` | `/api/supply-chain/observability/summary` | 观测汇总（只读） |
@@ -312,7 +315,7 @@ npm run lint
 npm run build
 ```
 
-最终验收轮本机回归（2026-10-21）：后端 H2 **1964/1964**，Vitest **110/110**，
+最终验收轮本机回归（2026-10-21）：后端 H2 **1970/1970**，Vitest **113/113**，
 TypeScript、ESLint、Build 通过；真实浏览器完整写链路 **18/18**、全站路由 **17/17**、可见交互巡检 **35/35**，
 控制台 0 错误、网络 0 个 4xx/5xx。MySQL IT **23/23** 为上一阶段结果，本轮未重跑
 （本轮无 schema/DDL 变更，且未启动隔离 MySQL）。测试数量是回归证据，不等同于业务效果或代码质量。

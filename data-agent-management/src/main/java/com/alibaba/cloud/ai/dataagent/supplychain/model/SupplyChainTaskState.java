@@ -28,7 +28,9 @@ public final class SupplyChainTaskState {
 
     public static final String FAILED = "FAILED";
 
-    public static final Set<String> ALL = Set.of(ACCEPTED, RUNNING, COMPLETED, FAILED);
+    public static final String CANCELLED = "CANCELLED";
+
+    public static final Set<String> ALL = Set.of(ACCEPTED, RUNNING, COMPLETED, FAILED, CANCELLED);
 
     private SupplyChainTaskState() {
     }

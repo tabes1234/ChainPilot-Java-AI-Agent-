@@ -28,6 +28,7 @@ import com.alibaba.cloud.ai.dataagent.supplychain.repository.SupplyChainDemoData
 import com.alibaba.cloud.ai.dataagent.supplychain.repository.SupplyChainEventRepository;
 import com.alibaba.cloud.ai.dataagent.supplychain.repository.SupplyChainTaskRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -37,7 +38,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -51,6 +56,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class SupplyChainWorkflowServiceTest {
+
+    @AfterEach
+    void clearCancellationSignals() {
+        TaskCancellationRegistry.reset();
+    }
 
     @Test
     void graphRunsQueryValidationAndReportAndTracksTaskStatus() throws Exception {
@@ -223,6 +233,80 @@ class SupplyChainWorkflowServiceTest {
         assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.TASK_COMPLETED.equals(event.type())));
         assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.NODE_COMPLETED.equals(event.type())
                 && "QUERYING_ORDERS".equals(event.stage())));
+    }
+
+    @Test
+    void cancellingAQueuedTaskPreventsWorkflowExecution() throws Exception {
+        WorkflowFixture fixture = fixture(null);
+        List<Runnable> pendingJobs = new ArrayList<>();
+        SupplyChainWorkflowService workflowService = createWorkflowService(pendingJobs::add, fixture);
+
+        SupplyChainTaskStatus accepted = workflowService.submit("查找延期订单");
+        SupplyChainTaskStatus cancelled = workflowService.cancel(accepted.taskId());
+        assertEquals("CANCELLED", cancelled.status());
+        assertEquals("CANCELLED", workflowService.cancel(accepted.taskId()).status());
+
+        pendingJobs.forEach(Runnable::run);
+
+        assertEquals("CANCELLED", workflowService.task(accepted.taskId()).status());
+        assertTrue(fixture.taskRepository().findReport(accepted.taskId()).isEmpty());
+        List<SupplyChainTaskEvent> events = workflowService.events(accepted.taskId());
+        assertTrue(events.stream().anyMatch(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type())));
+        assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.TASK_STARTED.equals(event.type())));
+        assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.TOOL_STARTED.equals(event.type())));
+    }
+
+    @Test
+    void cancellingARunningTaskStopsAtTheNextCheckpoint() throws Exception {
+        WorkflowFixture fixture = fixture(null);
+        CountDownLatch planStarted = new CountDownLatch(1);
+        CountDownLatch releasePlan = new CountDownLatch(1);
+        when(fixture.analysisService().createPlan(anyString())).thenAnswer(invocation -> {
+            planStarted.countDown();
+            assertTrue(releasePlan.await(10, TimeUnit.SECONDS));
+            return new WorkflowPlan(List.of("查询订单风险", "校验数据"), false);
+        });
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            SupplyChainWorkflowService workflowService = createWorkflowService(executor, fixture);
+            SupplyChainTaskStatus accepted = workflowService.submit("查找延期订单");
+            assertTrue(planStarted.await(10, TimeUnit.SECONDS));
+
+            SupplyChainTaskStatus cancelled = workflowService.cancel(accepted.taskId());
+            assertEquals("CANCELLED", cancelled.status());
+            releasePlan.countDown();
+
+            long deadline = System.currentTimeMillis() + 5_000;
+            while (System.currentTimeMillis() < deadline
+                    && !workflowService.task(accepted.taskId()).status().equals("CANCELLED")) {
+                Thread.sleep(50);
+            }
+            assertEquals("CANCELLED", workflowService.task(accepted.taskId()).status());
+            assertTrue(fixture.taskRepository().findReport(accepted.taskId()).isEmpty());
+            List<SupplyChainTaskEvent> events = workflowService.events(accepted.taskId());
+            assertTrue(events.stream().anyMatch(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type())));
+            assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.TASK_COMPLETED.equals(event.type())));
+            assertTrue(events.stream().noneMatch(event -> SupplyChainEventType.TOOL_STARTED.equals(event.type())));
+        }
+        finally {
+            releasePlan.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellingACompletedTaskKeepsCompletedOutcome() throws Exception {
+        WorkflowFixture fixture = fixture(null);
+        SupplyChainWorkflowService workflowService = createWorkflowService(Runnable::run, fixture);
+        RiskAnalysisReport report = workflowService.analyze("查找延期订单");
+
+        SupplyChainTaskStatus result = workflowService.cancel(report.taskId());
+
+        assertEquals("COMPLETED", result.status());
+        assertEquals("COMPLETED", workflowService.task(report.taskId()).status());
+        assertEquals(report, workflowService.report(report.taskId()));
+        assertFalse(workflowService.events(report.taskId()).stream()
+            .anyMatch(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type())));
     }
 
     private WorkflowFixture fixture(SupplyChainAnalysisService analysisService) {
