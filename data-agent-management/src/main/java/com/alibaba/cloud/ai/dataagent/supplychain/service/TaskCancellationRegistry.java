@@ -18,6 +18,7 @@ package com.alibaba.cloud.ai.dataagent.supplychain.service;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 /**
  * Process-local cancellation signals. A signal only prevents subsequent checkpoints from
@@ -26,6 +27,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class TaskCancellationRegistry {
 
     private static final ConcurrentMap<String, AtomicBoolean> SIGNALS = new ConcurrentHashMap<>();
+
+    private static volatile Function<String, Boolean> persistentChecker;
 
     private TaskCancellationRegistry() {
     }
@@ -43,8 +46,33 @@ public final class TaskCancellationRegistry {
         return signal != null && signal.get();
     }
 
+    /** Installs the database status reader used by every instance in the same deployment. */
+    public static void installPersistentChecker(Function<String, Boolean> checker) {
+        persistentChecker = checker;
+    }
+
+    public static boolean isCancelled(String taskId) {
+        if (taskId == null) {
+            return false;
+        }
+        if (isRequested(taskId)) {
+            return true;
+        }
+        Function<String, Boolean> checker = persistentChecker;
+        if (checker == null) {
+            return false;
+        }
+        try {
+            return Boolean.TRUE.equals(checker.apply(taskId));
+        }
+        catch (RuntimeException ignored) {
+            // A transient database failure must not turn into a false cancellation signal.
+            return false;
+        }
+    }
+
     public static void check(String taskId) {
-        if (taskId != null && isRequested(taskId)) {
+        if (isCancelled(taskId)) {
             throw new SupplyChainTaskCancelledException(taskId);
         }
     }
@@ -58,5 +86,6 @@ public final class TaskCancellationRegistry {
     /** Test hook; production code only ends the task that it owns. */
     static void reset() {
         SIGNALS.clear();
+        persistentChecker = null;
     }
 }

@@ -22,6 +22,8 @@ import com.alibaba.cloud.ai.dataagent.supplychain.model.OrderRiskAssessment;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskAnalysisReport;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.InventoryPosition;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplierRiskProfile;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainEventStatus;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainEventType;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskEvent;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskPage;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskState;
@@ -43,8 +45,11 @@ import com.alibaba.cloud.ai.graph.action.AsyncNodeAction;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import com.alibaba.cloud.ai.graph.exception.GraphStateException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -58,6 +63,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
+import java.util.function.Supplier;
 
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 import static com.alibaba.cloud.ai.graph.StateGraph.START;
@@ -81,6 +87,7 @@ public class SupplyChainWorkflowService {
     private final Executor analysisExecutor;
     private final Map<String, Future<?>> runningFutures = new ConcurrentHashMap<>();
     private final CompiledGraph workflow;
+    private TransactionTemplate transactionTemplate;
 
     public SupplyChainWorkflowService(SupplyChainAgentTools agentTools,
             SupplyChainAnalysisService analysisService, SupplyChainDecisionService decisionService,
@@ -96,6 +103,9 @@ public class SupplyChainWorkflowService {
         this.eventRepository = eventRepository;
         this.eventRecorder = eventRecorder;
         this.analysisExecutor = analysisExecutor;
+        TaskCancellationRegistry.installPersistentChecker(taskId -> taskRepository.findTask(taskId)
+            .map(status -> SupplyChainTaskState.CANCELLED.equals(status.status()))
+            .orElse(false));
         KeyStrategyFactory keyStrategies = () -> {
             Map<String, KeyStrategy> strategies = new HashMap<>();
             for (String key : List.of("taskId", "question", "taskType", "plan", "orders", "inventory", "suppliers",
@@ -241,6 +251,11 @@ public class SupplyChainWorkflowService {
         this.workflow = graph.compile(CompileConfig.builder().build());
     }
 
+    @Autowired(required = false)
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+    }
+
     public RiskAnalysisReport analyze(String question) {
         validateQuestion(question);
         String taskId = UUID.randomUUID().toString();
@@ -311,22 +326,44 @@ public class SupplyChainWorkflowService {
                 || SupplyChainTaskState.FAILED.equals(current.status())) {
             return current;
         }
-        if (!taskRepository.cancelIfActive(taskId)) {
-            return task(taskId);
+        CancelOutcome outcome = persistCancellation(taskId);
+        if (!outcome.changed()) {
+            return outcome.status();
         }
         TaskCancellationRegistry.request(taskId);
         Future<?> future = runningFutures.remove(taskId);
         if (future != null) {
             future.cancel(true);
         }
-        eventRecorder.taskCancelled(taskId, "WORKFLOW");
-        return task(taskId);
+        return outcome.status();
+    }
+
+    private CancelOutcome persistCancellation(String taskId) {
+        Supplier<CancelOutcome> action = () -> {
+            SupplyChainTaskStatus current = taskRepository.findTask(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown ChainPilot task: " + taskId));
+            if (SupplyChainTaskState.CANCELLED.equals(current.status())
+                    || SupplyChainTaskState.COMPLETED.equals(current.status())
+                    || SupplyChainTaskState.FAILED.equals(current.status())) {
+                return new CancelOutcome(current, false);
+            }
+            boolean changed = taskRepository.cancelIfActive(taskId);
+            if (changed) {
+                eventRepository.append(taskId, SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                        SupplyChainEventStatus.CANCELLED, Instant.now(), null, "task cancelled by user", null);
+            }
+            return new CancelOutcome(taskRepository.findTask(taskId).orElseThrow(), changed);
+        };
+        if (transactionTemplate != null) {
+            return transactionTemplate.execute(status -> action.get());
+        }
+        return action.get();
     }
 
     private void execute(String taskId, String question, String taskType) {
         SupplyChainTaskStatus initial = taskRepository.findTask(taskId).orElse(null);
         if (initial == null || SupplyChainTaskState.CANCELLED.equals(initial.status())
-                || TaskCancellationRegistry.isRequested(taskId)) {
+                || TaskCancellationRegistry.isCancelled(taskId)) {
             return;
         }
         long started = eventRecorder.taskStarted(taskId);
@@ -384,6 +421,9 @@ public class SupplyChainWorkflowService {
             }
             throw exception;
         }
+    }
+
+    private record CancelOutcome(SupplyChainTaskStatus status, boolean changed) {
     }
 
     private void ensureActive(String taskId) {

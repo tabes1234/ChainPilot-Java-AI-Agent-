@@ -398,7 +398,15 @@ public class SupplyChainDecisionService {
             Map<String, Object> parameters, List<String> evidence) {
         try {
             TaskCancellationRegistry.check(taskId);
-            return proposalService.create(taskId, actionType, title, targetId, parameters, evidence);
+            var proposal = proposalService.create(taskId, actionType, title, targetId, parameters, evidence);
+            try {
+                TaskCancellationRegistry.check(taskId);
+            }
+            catch (SupplyChainTaskCancelledException exception) {
+                proposalService.cancel(proposal.proposalId(), proposal.contentHash());
+                throw exception;
+            }
+            return proposal;
         }
         catch (SupplyChainTaskCancelledException exception) {
             throw exception;

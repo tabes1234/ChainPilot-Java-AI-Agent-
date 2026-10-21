@@ -32,6 +32,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -251,7 +252,7 @@ class SupplyChainWorkflowServiceTest {
         assertEquals("CANCELLED", workflowService.task(accepted.taskId()).status());
         assertTrue(fixture.taskRepository().findReport(accepted.taskId()).isEmpty());
         List<SupplyChainTaskEvent> events = workflowService.events(accepted.taskId());
-        assertTrue(events.stream().anyMatch(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type())));
+        assertEquals(1, events.stream().filter(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type())).count());
         assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.TASK_STARTED.equals(event.type())));
         assertFalse(events.stream().anyMatch(event -> SupplyChainEventType.TOOL_STARTED.equals(event.type())));
     }
@@ -295,6 +296,57 @@ class SupplyChainWorkflowServiceTest {
     }
 
     @Test
+    void persistentCancellationFromAnotherInstanceStopsExecutionWithoutInProcessSignal() throws Exception {
+        WorkflowFixture fixture = fixture(null);
+        CountDownLatch planStarted = new CountDownLatch(1);
+        CountDownLatch releasePlan = new CountDownLatch(1);
+        when(fixture.analysisService().createPlan(anyString())).thenAnswer(invocation -> {
+            planStarted.countDown();
+            assertTrue(releasePlan.await(10, TimeUnit.SECONDS));
+            return new WorkflowPlan(List.of("查询订单风险", "校验数据"), false);
+        });
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            SupplyChainWorkflowService workflowService = createWorkflowService(executor, fixture);
+            SupplyChainTaskStatus accepted = workflowService.submit("查找延期订单");
+            assertTrue(planStarted.await(10, TimeUnit.SECONDS));
+
+            // Simulate the cancellation request landing on another application instance: only the
+            // shared database changes; this process never receives TaskCancellationRegistry.request.
+            assertTrue(fixture.taskRepository().cancelIfActive(accepted.taskId()));
+            releasePlan.countDown();
+
+            long deadline = System.currentTimeMillis() + 5_000;
+            while (System.currentTimeMillis() < deadline
+                    && !workflowService.task(accepted.taskId()).status().equals("CANCELLED")) {
+                Thread.sleep(50);
+            }
+            assertEquals("CANCELLED", workflowService.task(accepted.taskId()).status());
+            assertTrue(fixture.taskRepository().findReport(accepted.taskId()).isEmpty());
+            assertTrue(workflowService.events(accepted.taskId()).stream()
+                .noneMatch(event -> SupplyChainEventType.TASK_COMPLETED.equals(event.type())));
+        }
+        finally {
+            releasePlan.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationRollsBackWhenTheCancellationEventCannotBePersisted() throws Exception {
+        WorkflowFixture fixture = fixture(null);
+        List<Runnable> pendingJobs = new ArrayList<>();
+        SupplyChainWorkflowService workflowService = createWorkflowService(pendingJobs::add, fixture);
+        SupplyChainTaskStatus task = workflowService.submit("查找延期订单");
+        assertEquals("ACCEPTED", task.status());
+        fixture.jdbc().execute("DROP TABLE chainpilot_task_event");
+
+        assertThrows(RuntimeException.class, () -> workflowService.cancel(task.taskId()));
+
+        assertEquals("ACCEPTED", workflowService.task(task.taskId()).status());
+    }
+
+    @Test
     void cancellingACompletedTaskKeepsCompletedOutcome() throws Exception {
         WorkflowFixture fixture = fixture(null);
         SupplyChainWorkflowService workflowService = createWorkflowService(Runnable::run, fixture);
@@ -317,7 +369,7 @@ class SupplyChainWorkflowServiceTest {
         SupplyChainEventRepository eventRepository = new SupplyChainEventRepository(jdbc);
         SupplyChainEventRecorder eventRecorder = new SupplyChainEventRecorder(eventRepository);
         SupplyChainAnalysisService analysis = analysisService == null ? defaultAnalysisService() : analysisService;
-        return new WorkflowFixture(objectMapper, taskRepository, eventRepository, eventRecorder, analysis);
+        return new WorkflowFixture(objectMapper, taskRepository, eventRepository, eventRecorder, analysis, jdbc);
     }
 
     private SupplyChainAnalysisService defaultAnalysisService() {
@@ -348,13 +400,15 @@ class SupplyChainWorkflowServiceTest {
                 mock(DisposalRecommendationService.class), mock(DisposalSimulationService.class),
                 mock(DisposalExecutionService.class), mock(DisposalScenarioComparisonService.class),
                 mock(DisposalPlanService.class), fixture.eventRecorder());
-        return new SupplyChainWorkflowService(tools, fixture.analysisService(),
+        SupplyChainWorkflowService service = new SupplyChainWorkflowService(tools, fixture.analysisService(),
                 mock(SupplyChainDecisionService.class), fixture.objectMapper(), fixture.taskRepository(),
                 fixture.eventRepository(), fixture.eventRecorder(), executor);
+        service.setTransactionManager(new DataSourceTransactionManager(fixture.jdbc().getDataSource()));
+        return service;
     }
 
     private record WorkflowFixture(ObjectMapper objectMapper, SupplyChainTaskRepository taskRepository,
             SupplyChainEventRepository eventRepository, SupplyChainEventRecorder eventRecorder,
-            SupplyChainAnalysisService analysisService) {
+            SupplyChainAnalysisService analysisService, JdbcTemplate jdbc) {
     }
 }
