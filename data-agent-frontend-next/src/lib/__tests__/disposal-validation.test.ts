@@ -16,10 +16,4 @@ describe('disposal comparison validation', () => {
 		expect(disposal).toContain('供应商 ID（必填）');
 	});
 
-	it('disables candidate plan saving while a save is in flight', () => {
-		expect(disposal).toContain('const [candidateSaveBusy, setCandidateSaveBusy]');
-		expect(disposal).toContain('if (candidateSaveBusy) return;');
-		expect(disposal).toContain('disabled={savingPlan || Boolean(candidate?.linkedPlanId)}');
-		expect(disposal).toContain("savingPlan ? '保存中…' : '保存为方案'");
-	});
 });

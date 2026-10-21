@@ -30,6 +30,11 @@ describe('envelope helpers', () => {
 		expect(friendlyErrorMessage(notFound, '加载方案详情失败', { 404: '方案不存在或已被清理' })).toBe('方案不存在或已被清理');
 		expect(friendlyErrorMessage({ ...notFound, status: 400 }, '加载方案详情失败', { 404: '方案不存在或已被清理' }))
 			.toBe('Unknown disposal plan: missing-plan');
+		expect(friendlyErrorMessage({ status: 400, message: 'HTTP 400', detail: 'title is required' }, '保存失败'))
+			.toBe('HTTP 400：title is required');
+		expect(friendlyErrorMessage({ status: 500, message: 'HTTP 500', detail: '' }, '加载失败')).toBe('加载失败');
+		expect(friendlyErrorMessage({ status: 409, message: 'HTTP 409', detail: '' }, '加载失败', { 409: '任务类型不匹配' }))
+			.toBe('任务类型不匹配');
 		expect(friendlyErrorMessage(undefined, '加载失败')).toBe('加载失败');
 	});
 });
@@ -77,5 +82,47 @@ describe('api client', () => {
 		vi.stubGlobal('fetch', fetchMock);
 
 		await api.post('/api/demo', { q: 1 });
+	});
+
+	it('handles empty, malformed and non-JSON success responses', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => new Response('', {
+			status: 200,
+			headers: { 'content-type': 'application/json' },
+		})));
+		await expect(api.get('/api/empty')).resolves.toBeUndefined();
+
+		vi.stubGlobal('fetch', vi.fn(async () => new Response('not-json', {
+			status: 200,
+			headers: { 'content-type': 'application/json' },
+		})));
+		await expect(api.get('/api/malformed')).rejects.toMatchObject({ status: 200, message: '响应不是有效的 JSON' });
+
+		vi.stubGlobal('fetch', vi.fn(async () => new Response('plain text', {
+			status: 200,
+			headers: { 'content-type': 'text/plain' },
+		})));
+		await expect(api.get('/api/text')).resolves.toBe('plain text');
+	});
+
+	it('keeps status and empty detail for empty/non-JSON error bodies', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => new Response('', {
+			status: 500,
+			headers: { 'content-type': 'application/json' },
+		})));
+		await expect(api.get('/api/empty-error')).rejects.toMatchObject({ status: 500, detail: '' });
+
+		vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', {
+			status: 502,
+			headers: { 'content-type': 'text/plain' },
+		})));
+		await expect(api.get('/api/text-error')).rejects.toMatchObject({ status: 502, detail: '' });
+	});
+
+	it('normalizes network failures to a stable Chinese message', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+		await expect(api.get('/api/offline')).rejects.toMatchObject({
+			status: 0,
+			message: '网络错误，请检查后端服务是否可用',
+		});
 	});
 });

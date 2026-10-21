@@ -48,7 +48,9 @@ export function friendlyErrorMessage(
 		const message = statusMessages[error.status];
 		if (message) return message;
 	}
-	return errorMessage(error, fallback);
+	const message = errorMessage(error, fallback);
+	if (isApiError(error) && !error.detail && /^HTTP \d+$/.test(message)) return fallback;
+	return message;
 }
 
 type RequestOptions = RequestInit & { timeoutMs?: number };
@@ -85,7 +87,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 		const contentType = response.headers.get('content-type') ?? '';
 		if (contentType.includes('application/json')) {
-			return (await response.json()) as T;
+			const text = await response.text();
+			if (!text.trim()) return undefined as T;
+			try {
+				return JSON.parse(text) as T;
+			} catch {
+				throw { status: response.status, message: '响应不是有效的 JSON' } as ApiError;
+			}
 		}
 		return (await response.text()) as unknown as T;
 	} catch (error) {
@@ -94,6 +102,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 			if (signal?.aborted) throw { status: 0, message: '请求已取消' } as ApiError;
 			throw { status: 0, message: `请求超时（${Math.round(timeoutMs / 1000)} 秒）` } as ApiError;
 		}
+		if (error instanceof TypeError) throw { status: 0, message: '网络错误，请检查后端服务是否可用' } as ApiError;
 		throw {
 			status: 0,
 			message: error instanceof Error ? error.message : '网络错误，请检查后端服务是否可用',

@@ -947,7 +947,7 @@ function ExecutionSteps({ execution }: { execution: SandboxExecution }) {
 	);
 }
 
-function ComparisonResult({
+export function ComparisonResult({
 	comparison,
 	onSavePlan,
 	savingPlan,

@@ -52,7 +52,7 @@ function Invoke-Api {
 
 function Get-Tasks {
     param([string]$Mode)
-    $items = @(Invoke-Api -Method GET -Path "/api/supply-chain/analysis/tasks?page=1&pageSize=50&mode=$Mode")
+    $items = @((Invoke-Api -Method GET -Path "/api/supply-chain/analysis/tasks?page=1&pageSize=50&mode=$Mode") | ForEach-Object { $_ })
     return $items
 }
 
@@ -70,9 +70,30 @@ function Wait-Task {
     throw "任务 $TaskId 在 $TimeoutSeconds 秒内未完成"
 }
 
-function Find-ByMarker {
-    param([object[]]$Items, [string]$Property, [string]$Value)
-    return @($Items | Where-Object { $_.$Property -eq $Value })
+function Find-MarkerTask {
+    param([string]$Mode)
+    $page = 1
+    while ($page -le 20) {
+        $items = @((Invoke-Api -Method GET -Path "/api/supply-chain/analysis/tasks?page=$page&pageSize=50&mode=$Mode") | ForEach-Object { $_ })
+        $match = $items | Where-Object { $_.question.StartsWith("[DEMO-SEED]") } | Select-Object -First 1
+        if ($match) { return $match }
+        if ($items.Count -lt 50) { return $null }
+        $page += 1
+    }
+    return $null
+}
+
+function Find-PagedMarker {
+    param([string]$PathTemplate, [string]$Prefix)
+    $page = 1
+    while ($page -le 20) {
+        $response = Invoke-Api -Method GET -Path ($PathTemplate -f $page)
+        $match = @($response.items | ForEach-Object { $_ }) | Where-Object { $_.title.StartsWith($Prefix) } | Select-Object -First 1
+        if ($match) { return $match }
+        if ($page -ge [int]$response.totalPages) { return $null }
+        $page += 1
+    }
+    return $null
 }
 
 function Submit-Task {
@@ -94,13 +115,12 @@ catch {
     throw "后端不可用，请先启动 8065 或传入 -BackendUrl。$($_.Exception.Message)"
 }
 
-$analysisTasks = Get-Tasks -Mode "ANALYSIS"
-$decisionTasks = Get-Tasks -Mode "DECISION"
-$allTasks = @($analysisTasks) + @($decisionTasks)
-$analysis = $analysisTasks | Where-Object { $_.question.StartsWith("[DEMO-SEED]") } | Select-Object -First 1
+$analysis = Find-MarkerTask -Mode "ANALYSIS"
+$decision = Find-MarkerTask -Mode "DECISION"
+$hasAnyTasks = @((Get-Tasks -Mode "ANALYSIS")).Count -gt 0 -or @((Get-Tasks -Mode "DECISION")).Count -gt 0
 
-if (-not $analysis -and $allTasks.Count -gt 0 -and -not $AllowExistingData) {
-    throw "当前数据库已有 $($allTasks.Count) 个任务，但没有演示标记；为避免污染用户记录，未写入任何数据。确认要追加演示链时使用 -AllowExistingData。"
+if (-not $analysis -and $hasAnyTasks -and -not $AllowExistingData) {
+    throw "当前数据库已有任务，但没有演示标记；为避免污染用户记录，未写入任何数据。确认要追加演示链时使用 -AllowExistingData。"
 }
 
 if (-not $analysis) {
@@ -112,7 +132,6 @@ else {
     Write-Host "复用分析任务 $($analysis.taskId)"
 }
 
-$decision = $decisionTasks | Where-Object { $_.question.StartsWith("[DEMO-SEED]") } | Select-Object -First 1
 if (-not $decision) {
     Write-Host "创建决策任务..."
     $decision = Submit-Task -Question $decisionQuestion -Mode "DECISION"
@@ -122,15 +141,11 @@ else {
     Write-Host "复用决策任务 $($decision.taskId)"
 }
 
-$plan = $null
-$plansPage = Invoke-Api -Method GET -Path "/api/supply-chain/disposal-plans?page=1&pageSize=50"
-$plan = @($plansPage.items) | Where-Object { $_.title.StartsWith("[DEMO-SEED]") } | Select-Object -First 1
+$plan = Find-PagedMarker -PathTemplate "/api/supply-chain/disposal-plans?page={0}&pageSize=50" -Prefix "[DEMO-SEED]"
 
 if (-not $plan) {
     Write-Host "创建对比、模拟与处置方案..."
-    $comparison = $null
-    $comparisonsPage = Invoke-Api -Method GET -Path "/api/supply-chain/disposal-scenario-comparisons?page=1&pageSize=50"
-    $comparison = @($comparisonsPage.items) | Where-Object { $_.title.StartsWith("[DEMO-SEED]") } | Select-Object -First 1
+    $comparison = Find-PagedMarker -PathTemplate "/api/supply-chain/disposal-scenario-comparisons?page={0}&pageSize=50" -Prefix "[DEMO-SEED]"
     if (-not $comparison) {
         $comparison = Invoke-Api -Method POST -Path "/api/supply-chain/disposal-scenario-comparisons" -Body @{
             title = $comparisonTitle

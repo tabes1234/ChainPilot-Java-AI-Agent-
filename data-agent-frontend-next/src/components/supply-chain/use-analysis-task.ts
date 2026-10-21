@@ -109,7 +109,7 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 			setTask(status);
 			void poll(status.taskId);
 		} catch (submitError) {
-			setError(errorMessage(submitError, '提交任务失败'));
+			if (mountedRef.current) setError(errorMessage(submitError, '提交任务失败'));
 		} finally {
 			if (mountedRef.current) setSubmitting(false);
 		}
