@@ -123,24 +123,29 @@ Windows PowerShell：
 
 ```powershell
 $env:JAVA_HOME = 'C:\path\to\jdk-17'
-.\mvnw.cmd -pl data-agent-management -am spring-boot:run "-Dspring-boot.run.profiles=h2"
+.\mvnw.cmd -pl data-agent-management spring-boot:run "-Dspring-boot.run.profiles=h2"
 ```
 
 Linux/macOS：
 
 ```bash
 export JAVA_HOME=/path/to/jdk-17
-./mvnw -pl data-agent-management -am spring-boot:run -Dspring-boot.run.profiles=h2
+./mvnw -pl data-agent-management spring-boot:run -Dspring-boot.run.profiles=h2
 ```
 
 默认端口 **8065**。H2 profile 使用 `data-agent-management/data/nl2sql_database` 文件数据库，
 便于重启后保留任务与报告；该文件属于本地数据，不应提交到 Git。
 
-也可以用打包后的 jar 启动：
+不要把 `-am` 加进 `spring-boot:run`：它会让 Spring Boot 插件在父 POM 上执行并报
+“Unable to find a suitable main class”。只指定业务模块即可。
+
+也可以用打包后的 jar 启动。Java 进程的工作目录决定相对 H2 路径，下面先进入模块目录，
+保证与 Maven 启动使用同一个数据库：
 
 ```bash
-./mvnw -pl data-agent-management -am -DskipTests package
-java -jar data-agent-management/target/chainpilot-management-1.0.0-SNAPSHOT.jar --spring.profiles.active=h2
+./mvnw -pl data-agent-management -DskipTests package
+cd data-agent-management
+java -jar target/chainpilot-management-1.0.0-SNAPSHOT.jar --spring.profiles.active=h2
 ```
 
 ## 启动前端
@@ -151,17 +156,26 @@ npm ci
 npm run dev
 ```
 
-浏览器打开 `http://localhost:3000`。开发和生产启动都会把 `/api/**`、`/uploads/**`
-代理到 `CHAINPILOT_BACKEND_URL`，默认 `http://localhost:8065`。
+浏览器打开 `http://localhost:3000`。开发模式在启动时读取 `CHAINPILOT_BACKEND_URL`，
+把 `/api/**`、`/uploads/**` 代理到该地址，默认 `http://localhost:8065`。
 
 生产构建与启动（当前验收使用 3002 端口）：
 
 ```bash
+CHAINPILOT_BACKEND_URL=http://localhost:8065 npm run build
+npm run start -- -p 3002
+```
+
+Windows PowerShell：
+
+```powershell
+$env:CHAINPILOT_BACKEND_URL = 'http://localhost:8065'
 npm run build
 npm run start -- -p 3002
 ```
 
-如果后端不在 8065：
+生产模式的代理目标在 `npm run build` 时写入路由清单；更换后端地址后需要重新构建。
+如果后端不在 8065，开发模式可以直接在启动前设置：
 
 ```bash
 CHAINPILOT_BACKEND_URL=http://127.0.0.1:8066 npm run dev
@@ -191,6 +205,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\chainpilot-smoke-t
 
 它不会创建任务、反馈、评测或模拟，不会清空数据库，不会触发连接测试，也不会调用真实模型。
 模型未就绪会标记为 `BLOCKED`，但不把外部未配置条件误报为 Smoke Test 失败。
+
+## 演示数据初始化（新环境可选）
+
+新数据库没有任务、方案、执行、评测和反馈时，可显式运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\chainpilot-demo-seed.ps1
+```
+
+脚本通过公开 API 创建一条带 `[DEMO-SEED]` 标记的完整链路：
+
+`分析任务 → 决策任务 → 方案对比 → 模拟 → 处置方案 → 选中 → 沙箱执行 → 离线评测 → 反馈`
+
+安全边界：
+
+- 只应连接本地演示后端；脚本不会调用模型，方案使用确定性解释，评测为 `OFFLINE`。
+- 重复执行会按标记复用已有记录，不会重复创建任务、方案、执行、反馈或评测。
+- 数据库已有任务但没有演示标记时，脚本会拒绝写入；确需在已有数据库追加演示链时显式加
+  `-AllowExistingData`。
+- 脚本不会清空、重置或修改已有任务、订单、库存和供应商数据。
+
+成功后会输出分析/决策/方案/执行/反馈/评测 ID，以及示例入口
+`/supply-chain?demo=supplier-delay`。
 
 ## 模型配置与真实 Agent 前置条件
 

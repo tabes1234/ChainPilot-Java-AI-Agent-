@@ -10,7 +10,7 @@
 1. 使用 JDK 17 启动后端：
 
    ```powershell
-   .\mvnw.cmd -pl data-agent-management -am spring-boot:run "-Dspring-boot.run.profiles=h2"
+   .\mvnw.cmd -pl data-agent-management spring-boot:run "-Dspring-boot.run.profiles=h2"
    ```
 
 2. 在另一个终端启动 Next.js：
@@ -21,7 +21,10 @@
    npm run dev
    ```
 
-3. 浏览 `http://localhost:3000`。如需生产构建验收，使用：
+3. 新数据库没有记录时，运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\chainpilot-demo-seed.ps1`
+   初始化一条可重复使用的完整演示链；脚本不会调用模型或清空数据。
+
+4. 浏览 `http://localhost:3000`。如需生产构建验收，使用：
 
    ```powershell
    npm run build

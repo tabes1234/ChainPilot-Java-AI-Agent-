@@ -13,7 +13,7 @@
 
 ## 2. Git 跟踪状态
 
-- 本地提交包含 **450 个文件**：Next.js 工作台、后端供应链/评测/反馈模块、Nuxt 历史前端修改、文档、CI、Smoke Test 与精选截图。
+- 本地提交包含 Next.js 工作台、后端供应链/评测/反馈模块、Nuxt 历史前端修改、文档、CI、Smoke Test、演示数据脚本与精选截图。
 - `data-agent-frontend-next/` 已纳入 Git，包含 `package.json`、`package-lock.json`、`next.config.ts`、`tsconfig.json`、`src/**`、`public/**`、测试与 README。
 - H2 运行库、`target/`、`node_modules/`、`.next/`、`.visual-check/`、日志和 `.env*` 均被忽略，未进入提交。
 - 本轮提交后 `git status --short` 为空。
@@ -60,6 +60,8 @@
 | 完整写链路 | 18/18 通过（分析 → 决策 → 对比 → 模拟 → 方案 → 沙箱 → 刷新 → 观测 → 评测 → 反馈） |
 | 342px 移动端 | 9 个主页面无水平溢出 |
 | Smoke Test | 10 PASS / 1 INFO / 1 BLOCKED / 0 FAIL |
+| 独立启动 | PowerShell `mvnw.cmd` + Next 生产启动通过；重启后旧任务/方案/执行/评测/反馈可读 |
+| 演示数据初始化 | 隔离空 H2 首次创建完整链路，第二次运行 createdCount=0；浏览器 12/12 通过 |
 | MySQL IT | 上一阶段 23/23；本轮无 schema 变更，未重跑 |
 
 后端命令使用 JDK 17 和 `test-compile` + `surefire:test`，避免 JaCoCo agent 在非 ASCII 工作区路径下失败；执行同一批 JUnit 测试，不跳过测试。
