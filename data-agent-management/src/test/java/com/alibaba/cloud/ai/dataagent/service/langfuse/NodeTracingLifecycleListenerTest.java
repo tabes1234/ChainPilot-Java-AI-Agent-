@@ -710,11 +710,19 @@ class NodeTracingLifecycleListenerTest {
 		LangfuseService.discardAccumulators(otherThread);
 
 		List<SpanData> spans = nodeSpans();
-		assertEquals(300L, spans.get(0).getAttributes().get(PROMPT_TOKENS));
-		assertEquals(6L, spans.get(1).getAttributes().get(PROMPT_TOKENS));
+		SpanData spanA = spans.stream()
+			.filter(span -> span.getAttributes().get(OUTPUT_VALUE).contains("=A"))
+			.findFirst()
+			.orElseThrow();
+		SpanData spanB = spans.stream()
+			.filter(span -> span.getAttributes().get(OUTPUT_VALUE).contains("=B"))
+			.findFirst()
+			.orElseThrow();
+		assertEquals(300L, spanA.getAttributes().get(PROMPT_TOKENS));
+		assertEquals(6L, spanB.getAttributes().get(PROMPT_TOKENS));
 		// 各自的 attempt 都从 1 开始，没有互相影响
-		assertEquals(1L, spans.get(0).getAttributes().get(ATTEMPT));
-		assertEquals(1L, spans.get(1).getAttributes().get(ATTEMPT));
+		assertEquals(1L, spanA.getAttributes().get(ATTEMPT));
+		assertEquals(1L, spanB.getAttributes().get(ATTEMPT));
 	}
 
 	/**

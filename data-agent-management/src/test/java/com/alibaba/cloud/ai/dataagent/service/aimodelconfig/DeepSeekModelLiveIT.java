@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -41,7 +42,7 @@ class DeepSeekModelLiveIT {
 
 	private static final String DEFAULT_COMPLETIONS_PATH = "/chat/completions";
 
-	private final DynamicModelFactory modelFactory = new DynamicModelFactory();
+	private final DynamicModelFactory modelFactory = new DynamicModelFactory(ObservationRegistry.NOOP);
 
 	@Test
 	void streamingChat_callsDeepSeekAndReturnsContentWithUsage() {

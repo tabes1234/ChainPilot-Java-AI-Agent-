@@ -18,6 +18,7 @@ package com.alibaba.cloud.ai.dataagent.service.aimodelconfig;
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,7 +50,7 @@ class DynamicModelFactoryTest {
 
 	@BeforeEach
 	void setUp() throws IOException {
-		dynamicModelFactory = new DynamicModelFactory();
+		dynamicModelFactory = new DynamicModelFactory(ObservationRegistry.NOOP);
 		providerRequests = new CopyOnWriteArrayList<>();
 		providerServer = startServer(providerRequests, false);
 		providerBaseUrl = "http://127.0.0.1:" + providerServer.getAddress().getPort();

@@ -15,11 +15,23 @@
  */
 
 <template>
-  <div>
-    <h1>Agent Dashboard</h1>
-  </div>
+	<p class="legacy-redirect-note">正在前往对应的智能体…</p>
 </template>
 
-<script setup lang="ts"></script>
+<script setup lang="ts">
+definePageMeta({
+	middleware: (to) => {
+		const agentId = Array.isArray(to.params.id) ? to.params.id[0] : to.params.id;
+		const query = agentId && /^\d+$/.test(String(agentId)) ? { agentId: String(agentId) } : {};
+		return navigateTo({ path: '/system/agents', query }, { redirectCode: 302 });
+	},
+});
+</script>
 
-<style scoped></style>
+<style scoped>
+.legacy-redirect-note {
+	padding: 32px;
+	color: #536a80;
+	font-size: 15px;
+}
+</style>

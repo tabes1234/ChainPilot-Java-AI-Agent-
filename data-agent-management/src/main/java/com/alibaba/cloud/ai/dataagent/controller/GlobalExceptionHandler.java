@@ -15,6 +15,7 @@
  */
 package com.alibaba.cloud.ai.dataagent.controller;
 
+import com.alibaba.cloud.ai.dataagent.evaluation.exception.AgentPrerequisiteException;
 import com.alibaba.cloud.ai.dataagent.exception.InternalServerException;
 import com.alibaba.cloud.ai.dataagent.exception.InvalidInputException;
 import com.alibaba.cloud.ai.dataagent.vo.ApiResponse;
@@ -45,6 +46,13 @@ public class GlobalExceptionHandler {
 	public ApiResponse<Object> handleInternalServerException(InternalServerException e) {
 		log.error("Internal server error: {}", e.getMessage(), e);
 		return ApiResponse.error(e.getMessage());
+	}
+
+	@ExceptionHandler(AgentPrerequisiteException.class)
+	public ResponseEntity<ApiResponse<Object>> handleAgentPrerequisiteException(AgentPrerequisiteException e) {
+		log.warn("Agent evaluation prerequisite rejected. code={} reason={}", e.code(), e.getMessage());
+		return ResponseEntity.status(e.status())
+			.body(ApiResponse.errorWithCode(e.code(), e.getMessage()));
 	}
 
 	@ExceptionHandler(ResponseStatusException.class)

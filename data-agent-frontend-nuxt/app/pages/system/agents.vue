@@ -15,16 +15,12 @@
  */
 
 <template>
-	<v-container fluid class="pa-8 agents-container">
-		<!-- Header Section -->
-		<header class="d-flex align-center justify-space-between mb-8">
-			<div>
-				<h1 class="text-h4 font-weight-bold mb-1 text-slate-900">智能体管理</h1>
-				<p class="text-body-2 text-medium-emphasis">
-					创建和管理您的AI智能体,让数据分析更智能
-				</p>
-			</div>
-			<div class="d-flex ga-3">
+	<section class="page-shell">
+		<KnowledgePageHeader
+			title="智能体管理"
+			subtitle="创建和管理智能体，统一配置其知识、提示词和可用数据能力。"
+		>
+			<template #actions>
 				<v-btn
 					variant="outlined"
 					prepend-icon="mdi-refresh"
@@ -44,8 +40,8 @@
 				>
 					新建智能体
 				</v-btn>
-			</div>
-		</header>
+			</template>
+		</KnowledgePageHeader>
 
 		<!-- Filter and Search Section -->
 		<v-card variant="flat" border class="rounded-lg mb-4 pa-4">
@@ -75,19 +71,19 @@
 				>
 					<v-btn value="all" variant="flat" class="px-6 text-none font-weight-medium">
 						全部智能体
-						<v-chip size="x-small" color="grey-lighten-3" class="ml-2">{{ agents.length }}</v-chip>
+						<v-chip size="x-small" variant="flat" color="grey-darken-3" class="ml-2">{{ agents.length }}</v-chip>
 					</v-btn>
 					<v-btn value="published" variant="flat" class="px-6 text-none font-weight-medium">
 						已发布
-						<v-chip size="x-small" color="success-lighten-3" class="ml-2">{{ publishedCount }}</v-chip>
+						<v-chip size="x-small" variant="flat" color="green-darken-3" class="ml-2">{{ publishedCount }}</v-chip>
 					</v-btn>
 					<v-btn value="draft" variant="flat" class="px-6 text-none font-weight-medium">
 						草稿
-						<v-chip size="x-small" color="warning-lighten-3" class="ml-2">{{ draftCount }}</v-chip>
+						<v-chip size="x-small" variant="flat" color="deep-orange-darken-4" class="ml-2">{{ draftCount }}</v-chip>
 					</v-btn>
 					<v-btn value="offline" variant="flat" class="px-6 text-none font-weight-medium">
 						已下线
-						<v-chip size="x-small" color="grey-lighten-3" class="ml-2">{{ offlineCount }}</v-chip>
+						<v-chip size="x-small" variant="flat" color="blue-grey-darken-3" class="ml-2">{{ offlineCount }}</v-chip>
 					</v-btn>
 				</v-btn-toggle>
 			</div>
@@ -141,7 +137,7 @@
 								v-for="(tag, index) in parseTags(item.tags).slice(0, 4)"
 								:key="index"
 								size="small"
-								color="blue"
+								color="blue-darken-3"
 								variant="tonal"
 							>
 								{{ tag }}
@@ -151,6 +147,8 @@
 								variant="text"
 								size="small"
 								icon
+								aria-label="查看全部标签"
+								title="查看全部标签"
 								@click="showAllTags(item)"
 							>
 								<v-icon size="16">mdi-dots-horizontal</v-icon>
@@ -184,6 +182,8 @@
 							variant="text"
 							size="small"
 							color="blue-darken-1"
+							aria-label="编辑智能体"
+							title="编辑智能体"
 							@click="handleEdit(item)"
 						>
 							<v-icon size="20" />
@@ -194,6 +194,8 @@
 							variant="text"
 							size="small"
 							color="error"
+							aria-label="删除智能体"
+							title="删除智能体"
 							@click="handleDelete(item)"
 						>
 							<v-icon size="20" />
@@ -245,7 +247,7 @@
 						<v-icon icon="mdi-pencil-circle" color="blue-darken-1" class="mr-3" size="28" />
 						<span class="text-h6 font-weight-bold">编辑智能体</span>
 					</div>
-					<v-btn icon="mdi-close" variant="text" size="small" @click="closeEditDialog" />
+					<v-btn icon="mdi-close" variant="text" size="small" aria-label="关闭编辑对话框" title="关闭" @click="closeEditDialog" />
 				</v-card-title>
 				<v-divider />
 
@@ -335,10 +337,10 @@
 			<v-card rounded="lg">
 				<v-card-title class="d-flex align-center justify-space-between px-6 pt-6 pb-4">
 					<div class="d-flex align-center">
-						<v-icon icon="mdi-tag-multiple" color="blue" class="mr-3" size="24" />
+						<v-icon icon="mdi-tag-multiple" color="blue-darken-3" class="mr-3" size="24" />
 						<span class="text-h6 font-weight-bold">全部标签</span>
 					</div>
-					<v-btn icon="mdi-close" variant="text" size="small" @click="tagsDialog = false" />
+					<v-btn icon="mdi-close" variant="text" size="small" aria-label="关闭全部标签对话框" title="关闭" @click="tagsDialog = false" />
 				</v-card-title>
 				<v-divider />
 
@@ -348,7 +350,7 @@
 							v-for="(tag, index) in currentTags"
 							:key="index"
 							size="default"
-							color="blue"
+							color="blue-darken-3"
 							variant="tonal"
 						>
 							{{ tag }}
@@ -365,7 +367,7 @@
 				</v-card-actions>
 			</v-card>
 		</v-dialog>
-	</v-container>
+	</section>
 </template>
 
 <script setup lang="ts">
@@ -419,13 +421,13 @@ watch(searchKeyword, (newVal) => {
 
 // Table Headers
 const headers = [
-	{ title: 'ID', key: 'id', width: '80px', sortable: false },
-	{ title: '智能体', key: 'name', minWidth: '200px', sortable: false },
-	{ title: '描述', key: 'description', minWidth: '250px', sortable: false },
-	{ title: '标签', key: 'tags', width: '220px', sortable: false },
-	{ title: '状态', key: 'status', width: '100px', sortable: false },
-	{ title: '创建时间', key: 'createTime', width: '170px', sortable: false },
-	{ title: '操作', key: 'actions', width: '120px', sortable: false, align: 'center' as const },
+	{ title: 'ID', key: 'id', width: '56px', sortable: false },
+	{ title: '智能体', key: 'name', minWidth: '170px', sortable: false },
+	{ title: '描述', key: 'description', minWidth: '190px', sortable: false },
+	{ title: '标签', key: 'tags', width: '170px', sortable: false },
+	{ title: '状态', key: 'status', width: '80px', sortable: false },
+	{ title: '创建时间', key: 'createTime', width: '140px', sortable: false },
+	{ title: '操作', key: 'actions', width: '84px', sortable: false, align: 'center' as const },
 ];
 
 const statusOptions = [
@@ -560,15 +562,6 @@ onMounted(() => { loadAgents(); });
 </script>
 
 <style scoped>
-.agents-container {
-	background-color: #f8fafc;
-	min-height: 100%;
-}
-
-.text-slate-900 {
-	color: #0f172a;
-}
-
 .filter-toggle {
 	background-color: #f1f5f9 !important;
 	padding: 4px !important;
@@ -580,5 +573,17 @@ onMounted(() => { loadAgents(); });
 
 .search-field {
 	border-color: #e2e8f0;
+}
+
+@media (max-width: 720px) {
+	.filter-toggle {
+		width: 100%;
+		height: auto !important;
+		flex-wrap: wrap;
+	}
+
+	.filter-toggle .v-btn {
+		flex: 1 1 44%;
+	}
 }
 </style>

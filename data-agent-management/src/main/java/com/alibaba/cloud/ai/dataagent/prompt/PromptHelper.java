@@ -186,7 +186,7 @@ public class PromptHelper {
 			params.put("businessKnowledge", businessTerms);
 		else
 			params.put("businessKnowledge", "无");
-		return PromptConstant.getBusinessKnowledgePromptTemplate().render(params);
+		return normalizeLineEndings(PromptConstant.getBusinessKnowledgePromptTemplate().render(params));
 	}
 
 	// agentKnowledge
@@ -196,7 +196,11 @@ public class PromptHelper {
 			params.put("agentKnowledge", agentKnowledge);
 		else
 			params.put("agentKnowledge", "无");
-		return PromptConstant.getAgentKnowledgePromptTemplate().render(params);
+		return normalizeLineEndings(PromptConstant.getAgentKnowledgePromptTemplate().render(params));
+	}
+
+	private static String normalizeLineEndings(String prompt) {
+		return prompt.replace("\r\n", "\n").replace('\r', '\n');
 	}
 
 	public static String buildSemanticModelPrompt(List<SemanticModel> semanticModels) {

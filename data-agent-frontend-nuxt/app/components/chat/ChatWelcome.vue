@@ -25,7 +25,7 @@
 				rounded="xl"
 				class="agent-avatar"
 			>
-				<span v-if="!store.currentAgentAvatar" class="agent-avatar-emoji">🤖</span>
+				<v-icon v-if="!store.currentAgentAvatar" icon="mdi-robot-outline" size="38" color="primary" />
 			</v-avatar>
 		</div>
 
@@ -63,11 +63,6 @@ const store = useChatStore();
 
 .agent-avatar {
 	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-}
-
-.agent-avatar-emoji {
-	font-size: 36px;
-	line-height: 1;
 }
 
 .welcome-title {

@@ -4,13 +4,13 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>com.alibaba.cloud.ai</groupId>
-        <artifactId>spring-ai-alibaba-data-agent</artifactId>
+        <artifactId>chainpilot</artifactId>
         <version>${revision}</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>spring-ai-alibaba-data-agent-management</artifactId>
-    <name>Spring AI Alibaba DataAgent Management</name>
+    <artifactId>chainpilot-management</artifactId>
+    <name>ChainPilot Management API</name>
     <url>https://github.com/alibaba/spring-ai-alibaba</url>
     <scm>
         <connection>git://github.com/alibaba/spring-ai-alibaba.git</connection>

@@ -17,8 +17,8 @@
 <template>
 	<section class="page-shell">
 		<KnowledgePageHeader
-			title="业务知识配置"
-			subtitle="管理全局业务术语词汇表，支持同义词扩展与向量化召回。"
+			title="业务术语"
+			subtitle="维护全局业务词汇，让同义词、口径和召回结果保持一致。"
 		>
 			<template #actions>
 				<v-btn
@@ -195,14 +195,18 @@
 							variant="text"
 							color="blue-darken-1"
 							icon="mdi-pencil"
+							aria-label="编辑业务知识"
+							title="编辑业务知识"
 							@click="editKnowledge(item)"
 						/>
 						<v-btn
 							v-if="item.embeddingStatus === 'FAILED'"
 							size="small"
 							variant="text"
-							color="orange-darken-1"
+							color="orange-darken-3"
 							icon="mdi-reload"
+							aria-label="重试向量化"
+							title="重试向量化"
 							:loading="
 								item.id !== undefined ? retryLoadingMap[item.id] : false
 							"
@@ -214,6 +218,8 @@
 							variant="text"
 							color="grey-darken-1"
 							icon="mdi-bookmark-off"
+							aria-label="取消召回"
+							title="取消召回"
 							@click="toggleRecall(item, false)"
 						>
 							<v-tooltip activator="parent" location="top">取消召回</v-tooltip>
@@ -224,6 +230,8 @@
 							variant="text"
 							color="blue-darken-1"
 							icon="mdi-bookmark-plus"
+							aria-label="设为召回"
+							title="设为召回"
 							@click="toggleRecall(item, true)"
 						>
 							<v-tooltip activator="parent" location="top">设为召回</v-tooltip>
@@ -233,6 +241,8 @@
 							variant="text"
 							color="red-darken-1"
 							icon="mdi-delete"
+							aria-label="删除业务知识"
+							title="删除业务知识"
 							@click="deleteKnowledge(item)"
 						/>
 					</div>
@@ -283,6 +293,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭业务知识对话框"
+						title="关闭"
 						@click="closeDialog"
 					/>
 				</v-card-title>
@@ -437,19 +449,19 @@ function openCreateDialog() {
 
 // ——— 表格列定义 ———
 const headers = [
-	{ title: 'ID', key: 'id', width: '70px', sortable: true },
-	{ title: '业务名词', key: 'businessTerm', minWidth: '130px' },
-	{ title: '描述', key: 'description', minWidth: '180px', sortable: false },
-	{ title: '同义词', key: 'synonyms', minWidth: '160px', sortable: false },
+	{ title: 'ID', key: 'id', width: '56px', sortable: true },
+	{ title: '业务名词', key: 'businessTerm', minWidth: '110px' },
+	{ title: '描述', key: 'description', minWidth: '130px', sortable: false },
+	{ title: '同义词', key: 'synonyms', minWidth: '120px', sortable: false },
 	{
 		title: '向量化状态',
 		key: 'embeddingStatus',
-		width: '140px',
+		width: '120px',
 		sortable: false,
 	},
-	{ title: '召回状态', key: 'isRecall', width: '120px', sortable: false },
-	{ title: '创建时间', key: 'createdTime', width: '160px' },
-	{ title: '操作', key: 'actions', width: '160px', sortable: false },
+	{ title: '召回状态', key: 'isRecall', width: '100px', sortable: false },
+	{ title: '创建时间', key: 'createdTime', width: '140px' },
+	{ title: '操作', key: 'actions', width: '140px', sortable: false },
 ];
 
 // ——— 工具函数 ———

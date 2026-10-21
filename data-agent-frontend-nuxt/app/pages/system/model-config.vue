@@ -15,16 +15,12 @@
  */
 
 <template>
-	<v-container fluid class="pa-8 model-config-container">
-		<!-- Header Section -->
-		<header class="d-flex align-center justify-space-between mb-8">
-			<div>
-				<h1 class="text-h4 font-weight-bold mb-1 text-slate-900">模型服务</h1>
-				<p class="text-body-2 text-medium-emphasis">
-					连接 LLM 供应商，支持对话生成与向量检索。
-				</p>
-			</div>
-			<div class="d-flex ga-3">
+	<section class="page-shell">
+		<KnowledgePageHeader
+			title="模型配置"
+			subtitle="配置对话模型与向量检索模型，决定 Agent 使用的语言和检索能力。"
+		>
+			<template #actions>
 				<v-btn
 					variant="outlined"
 					prepend-icon="mdi-refresh"
@@ -44,8 +40,8 @@
 				>
 					{{ activeTab === 'CHAT' ? '添加对话模型' : '添加嵌入模型' }}
 				</v-btn>
-			</div>
-		</header>
+			</template>
+		</KnowledgePageHeader>
 
 		<!-- Tab Navigation (Segmented Toggle) -->
 		<div class="d-flex justify-center mb-8">
@@ -114,7 +110,7 @@
 								:class="{ 'is-active': model.isActive }"
 								rounded="lg"
 							>
-								<div class="pa-5 d-flex align-center">
+								<div class="pa-5 d-flex align-center model-item-body">
 									<!-- Icon -->
 									<v-avatar
 										:color="model.isActive ? 'primary' : 'grey-lighten-4'"
@@ -133,9 +129,9 @@
 									</v-avatar>
 
 									<!-- Info -->
-									<div class="flex-grow-1">
-										<div class="d-flex align-center mb-1">
-											<span class="text-subtitle-1 font-weight-bold mr-2">{{
+									<div class="flex-grow-1 model-item-info">
+										<div class="d-flex align-center flex-wrap mb-1">
+											<span class="text-subtitle-1 font-weight-bold mr-2 model-item-name">{{
 												model.modelName
 											}}</span>
 											<!-- 带有呼吸灯的默认标签 -->
@@ -151,7 +147,7 @@
 											</v-chip>
 										</div>
 										<div
-											class="d-flex align-center text-caption text-medium-emphasis ga-4"
+											class="d-flex align-center flex-wrap text-caption text-medium-emphasis ga-4 model-item-meta"
 										>
 											<span class="d-flex align-center">
 												<v-icon size="14" class="mr-1">mdi-tray-full</v-icon>
@@ -165,7 +161,7 @@
 									</div>
 
 									<!-- Actions -->
-									<div class="d-flex align-center ga-4">
+									<div class="d-flex align-center ga-4 flex-wrap model-item-actions">
 										<v-btn
 											v-if="!model.isActive"
 											variant="outlined"
@@ -198,6 +194,8 @@
 												variant="text"
 												size="small"
 												color="grey-darken-1"
+												aria-label="编辑模型配置"
+												title="编辑模型配置"
 												@click="handleEdit(model)"
 											></v-btn>
 											<v-btn
@@ -205,6 +203,8 @@
 												variant="text"
 												size="small"
 												color="error"
+												aria-label="删除模型配置"
+												title="删除模型配置"
 												@click="handleDelete(model)"
 											></v-btn>
 										</div>
@@ -254,6 +254,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭模型配置对话框"
+						title="关闭"
 						@click="closeDialog"
 					/>
 				</v-card-title>
@@ -393,7 +395,7 @@
 				</v-card-actions>
 			</v-card>
 		</v-dialog>
-	</v-container>
+	</section>
 </template>
 
 <script setup lang="ts">
@@ -664,19 +666,35 @@ onMounted(fetchConfigs);
 </script>
 
 <style scoped>
-.model-config-container {
-	background-color: #f8fafc;
-	min-height: 100%;
+.model-item-info {
+	min-width: 0;
 }
 
-.text-slate-900 {
-	color: #0f172a;
+.model-item-name {
+	overflow-wrap: anywhere;
+}
+
+.model-item-meta {
+	row-gap: 4px;
+	overflow-wrap: anywhere;
 }
 
 .model-item-card {
 	transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 	border: 1px solid #e2e8f0 !important;
 	background-color: #ffffff !important;
+}
+
+@media (max-width: 720px) {
+	.model-item-body {
+		flex-wrap: wrap;
+		row-gap: 12px;
+	}
+
+	.model-item-actions {
+		width: 100%;
+		justify-content: flex-end;
+	}
 }
 
 .model-item-card:hover {

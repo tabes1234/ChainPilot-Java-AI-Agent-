@@ -446,7 +446,7 @@ watch(
 }
 
 .toggle-all-btn {
-	font-size: 11px !important;
+	font-size: 13px !important;
 	text-transform: none !important;
 	letter-spacing: 0 !important;
 }
@@ -633,13 +633,13 @@ watch(
 	background: #f6f8fa;
 	padding: 4px 10px;
 	border-bottom: 1px solid #e1e4e8;
-	font-size: 11px;
+	font-size: 13px;
 }
 .md-body :deep(.code-language) {
 	color: #6a737d;
 	font-weight: 600;
 	font-family: 'Monaco', 'Menlo', monospace;
-	font-size: 10px;
+	font-size: 12px;
 	text-transform: uppercase;
 }
 .md-body :deep(.code-copy-button) {
@@ -647,7 +647,7 @@ watch(
 	border: 1px solid #d1d5da;
 	padding: 2px 8px;
 	border-radius: 4px;
-	font-size: 10px;
+	font-size: 12px;
 	cursor: pointer;
 	transition: all 0.2s;
 	color: #24292e;
@@ -667,7 +667,7 @@ watch(
 	overflow-x: auto;
 	overflow-y: hidden;
 	background: #f6f8fa;
-	font-size: 11px;
+	font-size: 13px;
 	line-height: 1.35;
 	white-space: pre;
 }

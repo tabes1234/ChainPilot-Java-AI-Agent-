@@ -40,7 +40,7 @@ const echartsPlugin = (md: MarkdownIt) => {
 			} else if (code.length > 0) {
 				// Chart code is still being streamed — show a skeleton placeholder
 				return `<div class="md-echarts-skeleton">
-					<span class="md-echarts-skeleton-icon">⏳</span>
+					<span class="md-echarts-skeleton-icon"><i class="mdi mdi-timer-sand" aria-hidden="true"></i></span>
 					<span class="md-echarts-skeleton-text">图表生成中...</span>
 				</div>`;
 			} else {

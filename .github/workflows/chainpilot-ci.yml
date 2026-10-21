@@ -1,0 +1,89 @@
+#
+# Copyright 2024-2026 the original author or authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# ChainPilot-specific CI. The upstream DataAgent workflows are intentionally
+# repository-gated (spring-ai-alibaba/DataAgent), and the upstream frontend job
+# targets the historical Nuxt app. This workflow validates the current backend
+# and Next.js app without MySQL, external model calls or repository secrets.
+name: ChainPilot CI
+
+on:
+  push:
+    branches:
+      - feature/chainpilot
+      - main
+  pull_request:
+    branches:
+      - feature/chainpilot
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chainpilot-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-h2:
+    name: Backend H2 tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Compile backend tests
+        run: bash mvnw -B -pl data-agent-management test-compile -DskipTests
+      - name: Run backend tests
+        # JaCoCo's file agent fails on some non-ASCII workspace paths; Surefire still
+        # runs the same JUnit tests without the optional coverage agent.
+        run: bash mvnw -B -pl data-agent-management surefire:test -DfailIfNoTests=false
+
+  frontend:
+    name: Next.js tests, types, lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: data-agent-frontend-next
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: data-agent-frontend-next/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+
+# MySQL integration tests are intentionally not part of default CI: they require
+# an isolated MySQL 8 service or Testcontainers and are run explicitly. Real model
+# contract tests are also excluded and must never receive repository secrets here.

@@ -15,11 +15,19 @@
  */
 
 <template>
-  <div>
-    <h1>Agent Dashboard</h1>
-  </div>
+	<p class="legacy-redirect-note">正在前往智能体管理…</p>
 </template>
 
-<script setup lang="ts"></script>
+<script setup lang="ts">
+definePageMeta({
+	middleware: () => navigateTo('/system/agents', { redirectCode: 302 }),
+});
+</script>
 
-<style scoped></style>
+<style scoped>
+.legacy-redirect-note {
+	padding: 32px;
+	color: #536a80;
+	font-size: 15px;
+}
+</style>

@@ -49,8 +49,15 @@
 				<div class="ds-chip-wrap" @click.stop>
 					<div
 						class="status-chip status-chip--model"
-						:class="{ disabled: store.isStreaming || store.chatModels.length === 0 }"
+						:class="{ disabled: modelChipDisabled }"
+						role="button"
+						:tabindex="modelChipDisabled ? -1 : 0"
+						:aria-disabled="modelChipDisabled ? 'true' : undefined"
+						:aria-label="modelChipHint"
+						:title="modelChipHint"
 						@click="toggleModelMenu"
+						@keydown.enter.prevent="toggleModelMenu"
+						@keydown.space.prevent="toggleModelMenu"
 					>
 						<v-icon size="13" color="#3b82f6">mdi-lightning-bolt</v-icon>
 						<span>{{ store.activeModelConfig?.modelName || '选择AI模型' }}</span>
@@ -177,6 +184,17 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const showDsMenu = ref(false);
 const showModelMenu = ref(false);
 
+const modelChipDisabled = computed(
+	() => store.isStreaming || store.chatModels.length === 0,
+);
+const modelChipHint = computed(() => {
+	if (store.chatModels.length === 0) {
+		return '尚未配置可用的对话模型，请前往「系统配置 > 模型配置」';
+	}
+	if (store.isStreaming) return '正在生成回复，暂不可切换模型';
+	return '选择对话模型';
+});
+
 function toggleDsMenu() {
 	if (store.isStreaming) return;
 	showDsMenu.value = !showDsMenu.value;
@@ -289,8 +307,13 @@ onUnmounted(() => document.removeEventListener('click', closeMenus));
 	border-color: #94a3b8;
 }
 .status-chip.disabled {
-	opacity: 0.5;
+	color: #475569;
+	background: #f1f5f9;
+	border-color: #e2e8f0;
 	cursor: not-allowed;
+}
+.status-chip.disabled :deep(.v-icon) {
+	color: #64748b !important;
 }
 .status-chip--model {
 	background: #eff6ff;
@@ -299,6 +322,11 @@ onUnmounted(() => document.removeEventListener('click', closeMenus));
 }
 .status-chip--model:hover:not(.disabled) {
 	border-color: #93c5fd;
+}
+.status-chip--model.disabled {
+	color: #475569;
+	background: #f1f5f9;
+	border-color: #e2e8f0;
 }
 
 .chip-dropdown {
@@ -344,7 +372,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenus));
 }
 .item-tag {
 	flex-shrink: 0;
-	font-size: 11px;
+	font-size: 13px;
 	color: #94a3b8;
 	background: #f1f5f9;
 	border-radius: 4px;
@@ -379,11 +407,16 @@ onUnmounted(() => document.removeEventListener('click', closeMenus));
 	max-height: 300px;
 }
 .chat-textarea::placeholder {
-	color: #94a3b8;
+	color: #556b84;
 }
 .chat-textarea:disabled {
-	opacity: 0.6;
+	background: #f1f5f9;
+	color: #475569;
 	cursor: not-allowed;
+	opacity: 1;
+}
+.chat-textarea:disabled::placeholder {
+	color: #556b84;
 }
 
 /* ── Action bar ──────────────────────────────────────────────────────────────── */
@@ -455,8 +488,10 @@ onUnmounted(() => document.removeEventListener('click', closeMenus));
 .send-btn:hover:not(:disabled) {
 	background: #1d4ed8;
 }
-.send-btn:disabled {
-	opacity: 0.4;
+.send-btn.v-btn--disabled {
+	color: #475569 !important;
+	background: #e2e8f0 !important;
+	opacity: 1 !important;
 	cursor: not-allowed;
 }
 .send-icon {

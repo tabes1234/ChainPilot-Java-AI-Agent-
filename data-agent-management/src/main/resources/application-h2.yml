@@ -3,13 +3,16 @@ server:
 
 # 存储 DataAgent 业务数据的数据库，并非Agent分析数据的来源
 spring:
+  application:
+    name: chainpilot
   codec:
     # Python workflow timelines can contain generated code, result data and the final report.
     max-in-memory-size: 10MB
   datasource:
-    url: jdbc:h2:mem:nl2sql_database;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=true;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE
-    username: root
-    password: root
+    # File-backed local demo database so model settings, DataAgent state and ChainPilot reports survive restarts.
+    url: jdbc:h2:file:./data/nl2sql_database;DATABASE_TO_LOWER=true;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE
+    username: ${CHAINPILOT_H2_USERNAME:sa}
+    password: ${CHAINPILOT_H2_PASSWORD:}
     driver-class-name: org.h2.Driver
   sql:
     init:

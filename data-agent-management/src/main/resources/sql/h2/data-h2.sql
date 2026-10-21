@@ -14,7 +14,7 @@ ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), avat
 INSERT INTO datasource (id, name, type, host, port, database_name, username, password, connection_url, status, test_status, description, creator_id, create_time, update_time) VALUES 
 (1, '生产环境MySQL数据库', 'mysql', 'mysql-data', 3306, 'product_db', 'root', 'root', 'jdbc:mysql://mysql-data:3306/product_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true', 'inactive', 'unknown', '生产环境主数据库，包含核心业务数据', 2100246635, NOW(), NOW()),
 (2, '数据仓库PostgreSQL', 'postgresql', 'postgres-data', 5432, 'data_warehouse', 'postgres', 'postgres', 'jdbc:postgresql://postgres-data:5432/data_warehouse', 'inactive', 'unknown', '数据仓库，用于数据分析和报表生成', 2100246635, NOW(), NOW()),
-(3, 'product_db', 'h2', 'nl2sql_database', 0, 'product_db', 'root', 'root', 'jdbc:h2:mem:nl2sql_database;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=true;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE', 'inactive', 'unknown', 'h2测试数据库，包含核心业务数据', 2100246635, NOW(), NOW())
+(3, 'product_db', 'h2', 'nl2sql_database', 0, 'product_db', 'sa', '', 'jdbc:h2:file:./data/nl2sql_database;DATABASE_TO_LOWER=true;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE', 'inactive', 'unknown', 'h2测试数据库，包含核心业务数据', 2100246635, NOW(), NOW())
 ON DUPLICATE KEY UPDATE name=VALUES(name);
 
 -- 业务知识示例数据（依赖 agent）

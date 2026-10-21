@@ -273,13 +273,13 @@ onBeforeUnmount(() => {
 	background: #f6f8fa;
 	padding: 6px 10px;
 	border-bottom: 1px solid #e1e4e8;
-	font-size: 11px;
+	font-size: 13px;
 }
 .markdown-body :deep(.code-language) {
 	color: #6a737d;
 	font-weight: 600;
 	font-family: 'Monaco', 'Menlo', monospace;
-	font-size: 10px;
+	font-size: 12px;
 	text-transform: uppercase;
 }
 .markdown-body :deep(.code-copy-button) {
@@ -287,7 +287,7 @@ onBeforeUnmount(() => {
 	border: 1px solid #d1d5da;
 	padding: 3px 10px;
 	border-radius: 4px;
-	font-size: 10px;
+	font-size: 12px;
 	cursor: pointer;
 	transition: all 0.2s;
 	color: #24292e;

@@ -35,6 +35,8 @@
 					icon="mdi-close"
 					variant="text"
 					size="small"
+					aria-label="关闭逻辑外键对话框"
+					title="关闭"
 					@click="$emit('update:modelValue', false)"
 				/>
 			</v-card-title>
@@ -86,6 +88,8 @@
 										variant="text"
 										size="small"
 										color="error"
+										aria-label="删除逻辑外键"
+										title="删除逻辑外键"
 										:loading="deletingRelationId === fk.id"
 										@click="handleDelete(fk.id!)"
 									/>

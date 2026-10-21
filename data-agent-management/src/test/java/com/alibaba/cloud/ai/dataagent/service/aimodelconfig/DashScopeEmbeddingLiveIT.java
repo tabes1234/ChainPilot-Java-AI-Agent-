@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,7 +40,7 @@ class DashScopeEmbeddingLiveIT {
 
 	private static final int EXPECTED_DIMENSIONS = 1024;
 
-	private final DynamicModelFactory modelFactory = new DynamicModelFactory();
+	private final DynamicModelFactory modelFactory = new DynamicModelFactory(ObservationRegistry.NOOP);
 
 	@Test
 	void embeddings_callDashScopeAndReturnDistinctFiniteVectorsWithUsage() {

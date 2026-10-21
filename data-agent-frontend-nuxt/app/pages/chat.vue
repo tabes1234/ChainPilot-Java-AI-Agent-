@@ -16,6 +16,7 @@
 
 <template>
 	<div class="chat-page">
+		<h1 class="sr-only">数据问答</h1>
 		<ChatSidebar />
 		<div class="chat-body">
 			<ChatMessageList />

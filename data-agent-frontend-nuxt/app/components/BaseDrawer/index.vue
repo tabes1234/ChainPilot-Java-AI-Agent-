@@ -78,20 +78,24 @@ const cssVars = computed(() => ({
 	display: flex;
 	width: 100%;
 	height: 100vh;
+	height: 100dvh;
 	overflow: hidden;
-	background-color: #f8fafc;
+	background-color: #fbfdff;
 }
 
 .base-drawer__left {
 	width: var(--drawer-width);
 	height: 100%;
-	background-color: #1e293b;
-	color: #e2e8f0;
+	background-color: #f5f9fd;
+	color: #243b55;
 	transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
-	border-right: 1px solid rgba(255, 255, 255, 0.05);
+	border-right: 1px solid rgba(215, 228, 242, 0.6);
+	border-top-right-radius: 18px;
+	border-bottom-right-radius: 18px;
+	box-shadow: 4px 0 18px rgba(28, 60, 92, 0.04);
 	flex-shrink: 0;
 	white-space: nowrap;
 }
@@ -106,12 +110,15 @@ const cssVars = computed(() => ({
 	flex-direction: column;
 	min-width: 0; /* Prevent flex child overflow */
 	height: 100%;
+	background: linear-gradient(160deg, rgba(249, 252, 255, 0.96), rgba(243, 249, 253, 0.96));
 }
 
 .base-drawer__header {
 	height: 56px;
-	border-bottom: 1px solid #e2e8f0;
-	background-color: #ffffff;
+	min-width: 0;
+	border-bottom: 1px solid #dce8f5;
+	background-color: rgba(255, 255, 255, 0.9);
+	backdrop-filter: blur(12px);
 	display: flex;
 	align-items: center;
 	padding: 0 16px;
@@ -120,7 +127,9 @@ const cssVars = computed(() => ({
 
 .base-drawer__content {
 	flex: 1;
+	min-height: 0;
 	overflow: auto;
+	overscroll-behavior: contain;
 	position: relative;
 }
 
@@ -129,7 +138,7 @@ const cssVars = computed(() => ({
 		position: absolute;
 		inset: 0 auto 0 0;
 		z-index: 100;
-		box-shadow: 8px 0 24px rgba(15, 23, 42, 0.2);
+		box-shadow: 10px 0 32px rgba(28, 60, 92, 0.14);
 	}
 
 	.base-drawer__left--closed {

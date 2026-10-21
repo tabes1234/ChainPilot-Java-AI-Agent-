@@ -39,6 +39,10 @@ target/
 # windows os
 /extensions/
 /h2-data/
+/data/*.mv.db
+/data/*.trace.db
+**/data/*.mv.db
+**/data/*.trace.db
 
 # checkstyle report files
 **/checkstyle-report.xml

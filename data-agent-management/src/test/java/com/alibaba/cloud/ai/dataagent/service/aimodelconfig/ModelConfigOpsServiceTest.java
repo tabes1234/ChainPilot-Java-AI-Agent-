@@ -25,8 +25,18 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpClientErrorException;
+
+import java.nio.charset.StandardCharsets;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -45,10 +55,13 @@ class ModelConfigOpsServiceTest {
 	@Mock
 	private AiModelRegistry aiModelRegistry;
 
+	@Mock
+	private ModelReadinessService modelReadinessService;
+
 	@BeforeEach
 	void setUp() {
 		service = new ModelConfigOpsService(modelConfigDataService, modelFactory, aiModelRegistry,
-				new EmbeddingModelCompatibilityValidator(new DataAgentProperties()));
+				new EmbeddingModelCompatibilityValidator(new DataAgentProperties()), modelReadinessService);
 	}
 
 	@Test
@@ -80,6 +93,7 @@ class ModelConfigOpsServiceTest {
 	@Test
 	void testUpdateAndRefresh_inactive() {
 		ModelConfigDTO dto = new ModelConfigDTO();
+		dto.setId(8);
 		ModelConfig entity = new ModelConfig();
 		entity.setIsActive(false);
 		when(modelConfigDataService.updateConfigInDb(dto)).thenReturn(entity);
@@ -88,6 +102,7 @@ class ModelConfigOpsServiceTest {
 
 		verify(aiModelRegistry, never()).refreshChat();
 		verify(aiModelRegistry, never()).refreshEmbedding();
+		verify(modelReadinessService).invalidate(8);
 	}
 
 	@Test
@@ -128,6 +143,7 @@ class ModelConfigOpsServiceTest {
 		assertDoesNotThrow(() -> service.testConnection(1));
 		verify(modelFactory).createChatModel(argThat(config -> "stored-api-key".equals(config.getApiKey())));
 		verify(chatModel).call("Hello");
+		verify(modelReadinessService).recordSuccess(argThat(config -> "stored-api-key".equals(config.getApiKey())));
 	}
 
 	@Test
@@ -155,10 +171,11 @@ class ModelConfigOpsServiceTest {
 		entity.setModelType(null);
 		when(modelConfigDataService.findById(3)).thenReturn(entity);
 
-		IllegalArgumentException exception = assertThrowsExactly(IllegalArgumentException.class,
+		ModelConnectionTestException exception = assertThrowsExactly(ModelConnectionTestException.class,
 				() -> service.testConnection(3));
 
-		assertEquals("未知的模型类型: null", exception.getMessage());
+		assertEquals(ModelConnectionErrorClassifier.INVALID_MODEL_CONFIGURATION, exception.code());
+		assertEquals("模型配置无效，请检查模型类型。", exception.getMessage());
 		verifyNoInteractions(modelFactory);
 	}
 
@@ -166,10 +183,11 @@ class ModelConfigOpsServiceTest {
 	void testTestConnection_notFound() {
 		when(modelConfigDataService.findById(99)).thenReturn(null);
 
-		IllegalArgumentException exception = assertThrowsExactly(IllegalArgumentException.class,
+		ModelConnectionTestException exception = assertThrowsExactly(ModelConnectionTestException.class,
 				() -> service.testConnection(99));
 
-		assertEquals("配置不存在", exception.getMessage());
+		assertEquals(ModelConnectionErrorClassifier.INVALID_MODEL_CONFIGURATION, exception.code());
+		assertEquals("模型配置不存在。", exception.getMessage());
 		verifyNoInteractions(modelFactory);
 	}
 
@@ -184,9 +202,12 @@ class ModelConfigOpsServiceTest {
 		when(modelFactory.createChatModel(any(ModelConfigDTO.class))).thenReturn(chatModel);
 		when(chatModel.call("Hello")).thenReturn("");
 
-		RuntimeException exception = assertThrowsExactly(RuntimeException.class, () -> service.testConnection(4));
+		ModelConnectionTestException exception = assertThrowsExactly(ModelConnectionTestException.class,
+				() -> service.testConnection(4));
 
-		assertEquals("模型返回内容为空", exception.getMessage());
+		assertEquals(ModelConnectionErrorClassifier.UNSUPPORTED_RESPONSE, exception.code());
+		assertEquals("模型返回内容为空。", exception.getMessage());
+		verify(modelReadinessService).recordFailure(any(ModelConfigDTO.class), eq("模型返回内容为空。"));
 	}
 
 	@Test
@@ -200,9 +221,11 @@ class ModelConfigOpsServiceTest {
 		when(modelFactory.createEmbeddingModel(any(ModelConfigDTO.class))).thenReturn(embeddingModel);
 		when(embeddingModel.embed("Test")).thenReturn(new float[0]);
 
-		RuntimeException exception = assertThrowsExactly(RuntimeException.class, () -> service.testConnection(5));
+		ModelConnectionTestException exception = assertThrowsExactly(ModelConnectionTestException.class,
+				() -> service.testConnection(5));
 
-		assertEquals("模型生成的向量为空", exception.getMessage());
+		assertEquals(ModelConnectionErrorClassifier.UNSUPPORTED_RESPONSE, exception.code());
+		assertEquals("模型生成的向量为空。", exception.getMessage());
 	}
 
 	@Test
@@ -216,9 +239,61 @@ class ModelConfigOpsServiceTest {
 		when(modelFactory.createChatModel(any(ModelConfigDTO.class))).thenReturn(chatModel);
 		when(chatModel.call("Hello")).thenThrow(new RuntimeException());
 
-		RuntimeException exception = assertThrowsExactly(RuntimeException.class, () -> service.testConnection(6));
+		ModelConnectionTestException exception = assertThrowsExactly(ModelConnectionTestException.class,
+				() -> service.testConnection(6));
 
-		assertEquals("RuntimeException", exception.getMessage());
+		assertEquals(ModelConnectionErrorClassifier.CONNECTION_TEST_FAILED, exception.code());
+		assertEquals("连接测试失败，请检查模型配置或稍后重试。", exception.getMessage());
+	}
+
+	@Test
+	void testTestConnection_failureMessageReadinessAndLogsNeverExposeCanaries() {
+		ModelConfig entity = new ModelConfig();
+		entity.setId(7);
+		entity.setModelType(ModelType.CHAT);
+		entity.setApiKey("sk-secret-value");
+		entity.setProxyPassword("canary-proxy-pass");
+		when(modelConfigDataService.findById(7)).thenReturn(entity);
+
+		String canary = "Authorization: Bearer canary-auth-123; "
+				+ "url=https://canary-user:canary-pass@example.invalid/v1?api_key=canary-key&token=canary-token; "
+				+ "key=sk-secret-value";
+		HttpClientErrorException providerFailure = HttpClientErrorException.create(HttpStatus.UNAUTHORIZED,
+				"Unauthorized", new HttpHeaders(), canary.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+		ChatModel chatModel = mock(ChatModel.class);
+		when(modelFactory.createChatModel(any(ModelConfigDTO.class))).thenReturn(chatModel);
+		when(chatModel.call("Hello")).thenThrow(providerFailure);
+
+		Logger logger = (Logger) LoggerFactory.getLogger(ModelConfigOpsService.class);
+		ListAppender<ILoggingEvent> appender = new ListAppender<>();
+		appender.start();
+		logger.addAppender(appender);
+		try {
+			ModelConnectionTestException exception = assertThrowsExactly(ModelConnectionTestException.class,
+					() -> service.testConnection(7));
+
+			assertEquals(ModelConnectionErrorClassifier.AUTHENTICATION_FAILED, exception.code());
+			assertNoCanary(exception.getMessage());
+			verify(modelReadinessService).recordFailure(any(ModelConfigDTO.class), argThat(message -> {
+				assertNoCanary(message);
+				return message.contains("鉴权失败");
+			}));
+			String logs = appender.list.stream().map(ILoggingEvent::getFormattedMessage)
+				.collect(Collectors.joining("\n"));
+			assertNoCanary(logs);
+			assertTrue(logs.contains(ModelConnectionErrorClassifier.AUTHENTICATION_FAILED));
+		}
+		finally {
+			logger.detachAppender(appender);
+			appender.stop();
+		}
+	}
+
+	private static void assertNoCanary(String value) {
+		for (String canary : new String[] { "canary-auth-123", "canary-user", "canary-pass", "canary-key",
+				"canary-token", "canary-proxy-pass", "sk-secret-value" }) {
+			assertFalse(value.contains(canary), "sensitive canary leaked: " + canary);
+		}
 	}
 
 }

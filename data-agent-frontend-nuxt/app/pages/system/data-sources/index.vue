@@ -16,14 +16,11 @@
 
 <template>
 	<section class="page-shell">
-		<header class="d-flex align-center justify-space-between mb-8">
-			<div>
-				<h1 class="text-h4 font-weight-bold mb-1 text-slate-900">数据源配置</h1>
-				<p class="text-body-2 text-medium-emphasis">
-					管理全局数据库连接资源，配置连接信息与逻辑外键。
-				</p>
-			</div>
-			<div class="d-flex ga-3">
+		<KnowledgePageHeader
+			title="数据源管理"
+			subtitle="管理数据库连接、可用数据表和逻辑外键，为问答与分析提供一致的数据范围。"
+		>
+			<template #actions>
 				<v-btn
 					variant="outlined"
 					prepend-icon="mdi-refresh"
@@ -54,8 +51,8 @@
 				>
 					{{ initStatus ? '初始化中...' : '初始化当前智能体数据源' }}
 				</v-btn>
-			</div>
-		</header>
+			</template>
+		</KnowledgePageHeader>
 
 		<v-card variant="flat" border class="rounded-lg">
 			<v-data-table
@@ -86,6 +83,8 @@
 						icon
 						variant="text"
 						size="small"
+						:aria-label="isExpanded(internalItem) ? '收起数据表信息' : '展开数据表信息'"
+						:title="isExpanded(internalItem) ? '收起数据表信息' : '展开数据表信息'"
 						@click="toggleExpand(internalItem)"
 					>
 						<v-icon>{{
@@ -99,6 +98,8 @@
 						size="small"
 						disabled
 						class="expand-disabled"
+						aria-label="当前数据源没有可展开的数据表信息"
+						title="当前数据源没有可展开的数据表信息"
 					>
 						<v-icon>mdi-chevron-down</v-icon>
 					</v-btn>
@@ -170,17 +171,25 @@
 				<!-- eslint-disable-next-line vue/valid-v-slot -->
 				<template #item.actions="{ item }">
 					<div class="d-flex align-center justify-end ga-1">
+						<v-chip
+							v-if="agentId && activeDatasourceId === item.id"
+							size="small"
+							variant="tonal"
+							color="blue-grey-darken-2"
+							class="font-weight-bold"
+						>
+							当前使用中
+						</v-chip>
 						<v-btn
-							v-if="agentId"
+							v-else-if="agentId"
 							variant="text"
 							size="small"
 							color="primary"
 							class="text-none font-weight-bold"
 							:loading="bindingDatasourceId === item.id"
-							:disabled="activeDatasourceId === item.id"
 							@click="handleBindDatasource(item)"
 						>
-							{{ activeDatasourceId === item.id ? '当前使用中' : '设为当前' }}
+							设为当前
 						</v-btn>
 						<v-btn
 							variant="text"
@@ -216,6 +225,8 @@
 							variant="text"
 							size="small"
 							color="primary"
+							aria-label="编辑数据源"
+							title="编辑数据源"
 							@click="openFormDialog('edit', item)"
 						/>
 						<v-btn
@@ -223,6 +234,8 @@
 							variant="text"
 							size="small"
 							color="error"
+							aria-label="删除数据源"
+							title="删除数据源"
 							@click="handleDelete(item)"
 						/>
 					</div>

@@ -42,6 +42,8 @@ public class ModelConfigOpsService {
 
 	private final EmbeddingModelCompatibilityValidator embeddingModelCompatibilityValidator;
 
+	private final ModelReadinessService modelReadinessService;
+
 	/**
 	 * 专门处理：更新配置并热刷新的聚合逻辑
 	 */
@@ -69,6 +71,8 @@ public class ModelConfigOpsService {
 				throw new RuntimeException("配置更新失败: " + e.getMessage(), e);
 			}
 		}
+		// Any edit changes the configuration signature, so a previous test no longer applies.
+		modelReadinessService.invalidate(dto.getId());
 	}
 
 	/**
@@ -118,12 +122,22 @@ public class ModelConfigOpsService {
 	public void testConnection(Integer id) {
 		ModelConfig entity = modelConfigDataService.findById(id);
 		if (entity == null) {
-			throw new IllegalArgumentException("配置不存在");
+			throw new ModelConnectionTestException(ModelConnectionErrorClassifier.INVALID_MODEL_CONFIGURATION,
+					"模型配置不存在。");
 		}
 		if (entity.getModelType() == null) {
-			throw new IllegalArgumentException("未知的模型类型: null");
+			throw new ModelConnectionTestException(ModelConnectionErrorClassifier.INVALID_MODEL_CONFIGURATION,
+					"模型配置无效，请检查模型类型。");
 		}
-		testConnection(ModelConfigConverter.toDTO(entity));
+		ModelConfigDTO config = ModelConfigConverter.toDTO(entity);
+		try {
+			testConnection(config);
+			modelReadinessService.recordSuccess(config);
+		}
+		catch (ModelConnectionTestException exception) {
+			modelReadinessService.recordFailure(config, exception.getMessage());
+			throw exception;
+		}
 	}
 
 	private void testConnection(ModelConfigDTO config) {
@@ -141,12 +155,12 @@ public class ModelConfigOpsService {
 			}
 		}
 		catch (Exception e) {
-			log.error("Failed to test model connection. Type: {}, provider: {}, model: {}", config.getModelType(),
-					config.getProvider(), config.getModelName(), e);
-			// 重新抛出异常，让 Controller 捕获并展示给前端
-			// 如果是 OpenAiHttpException，通常包含具体的 API 错误信息
-			throw new RuntimeException(parseErrorMessage(e));
-		}
+			ModelConnectionTestException safe = ModelConnectionErrorClassifier.classify(e);
+			log.error("Failed to test model connection. Type: {}, provider: {}, model: {}, code: {}, errorType: {}, diagnostic: {}",
+					config.getModelType(), config.getProvider(), config.getModelName(), safe.code(),
+					e.getClass().getSimpleName(), ModelConnectionErrorClassifier.diagnostic(e, config));
+			throw safe;
+		 }
 	}
 
 	private void testChatModel(ModelConfigDTO config) {
@@ -164,7 +178,8 @@ public class ModelConfigOpsService {
 
 		// 4. 校验结果
 		if (!StringUtils.hasText(response)) {
-			throw new RuntimeException("模型返回内容为空");
+			throw new ModelConnectionTestException(ModelConnectionErrorClassifier.UNSUPPORTED_RESPONSE,
+					"模型返回内容为空。");
 		}
 		log.debug("Chat Model test passed. Response: {}", response);
 	}
@@ -180,34 +195,11 @@ public class ModelConfigOpsService {
 
 		// 3. 校验结果
 		if (embedding == null || embedding.length == 0) {
-			throw new RuntimeException("模型生成的向量为空");
+			throw new ModelConnectionTestException(ModelConnectionErrorClassifier.UNSUPPORTED_RESPONSE,
+					"模型生成的向量为空。");
 		}
 		embeddingModelCompatibilityValidator.validateDimension(embedding.length);
 		log.info("Embedding Model test passed. Dimension: {}", embedding.length);
-	}
-
-	/**
-	 * 辅助方法：提取更友好的错误信息 Spring AI 抛出的异常有时候嵌套很深
-	 */
-	private String parseErrorMessage(Exception e) {
-		String message = e.getMessage();
-		if (!StringUtils.hasText(message)) {
-			return e.getClass().getSimpleName();
-		}
-		// 如果是 401，通常是 Key 错
-		if (message.contains("401")) {
-			return "鉴权失败 (401)，请检查 API Key 是否正确。";
-		}
-		// 如果是 404，通常是 BaseUrl 或 Path 错
-		if (message.contains("404")) {
-			return "接口未找到 (404)，请检查 Base URL 或者路径配置地址。";
-		}
-		// 如果是 429，额度没了
-		if (message.contains("429")) {
-			return "请求过多或余额不足 (429)，请检查厂商额度。";
-		}
-		// 其他错误直接返回原样
-		return message;
 	}
 
 }

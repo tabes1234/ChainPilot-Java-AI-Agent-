@@ -15,12 +15,12 @@
  */
 
 <template>
-	<header class="d-flex align-center justify-space-between mb-8 knowledge-header">
-		<div>
-			<h1 class="text-h4 font-weight-bold mb-1 knowledge-header__title">{{ title }}</h1>
-			<p class="text-body-2 text-medium-emphasis">{{ subtitle }}</p>
+	<header class="knowledge-header page-header">
+		<div class="page-header__copy">
+			<h1 class="page-title">{{ title }}</h1>
+			<p class="page-description">{{ subtitle }}</p>
 		</div>
-		<div class="d-flex ga-3">
+		<div class="page-header__actions">
 			<slot name="actions" />
 		</div>
 	</header>
@@ -32,9 +32,3 @@ defineProps<{
 	subtitle: string;
 }>();
 </script>
-
-<style scoped>
-.knowledge-header__title {
-	color: #1565c0;
-}
-</style>

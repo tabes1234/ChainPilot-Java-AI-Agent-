@@ -4,9 +4,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.alibaba.cloud.ai</groupId>
-  <artifactId>spring-ai-alibaba-data-agent</artifactId>
+  <artifactId>chainpilot</artifactId>
   <packaging>pom</packaging>
-  <name>Spring AI Alibaba Data Agent</name>
+  <name>ChainPilot - Supply Chain Agent Platform</name>
   <version>${revision}</version>
   <url>https://github.com/alibaba/spring-ai-alibaba</url>
 

@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.service.aimodelconfig;
 
 import com.alibaba.cloud.ai.dataagent.enums.ModelType;
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
+import io.micrometer.observation.ObservationRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -32,6 +33,8 @@ public class AiModelRegistry {
 	private final DynamicModelFactory modelFactory;
 
 	private final ModelConfigDataService modelConfigDataService;
+
+	private final ObservationRegistry observationRegistry;
 
 	// 缓存对象 (volatile 保证可见性)
 	private volatile ChatClient currentChatClient;
@@ -50,8 +53,8 @@ public class AiModelRegistry {
 						ModelConfigDTO config = modelConfigDataService.getActiveConfigByType(ModelType.CHAT);
 						if (config != null) {
 							ChatModel chatModel = modelFactory.createChatModel(config);
-							// 核心：基于新 Model 创建新 Client，彻底消除旧参数缓存
-							currentChatClient = ChatClient.builder(chatModel).build();
+							// 核心：基于新 Model 创建新 Client，彻底消除旧参数缓存；同时保留客户端级观测
+							currentChatClient = ChatClient.builder(chatModel, observationRegistry, null, null).build();
 						}
 					}
 					catch (Exception e) {

@@ -15,10 +15,12 @@
  */
 package com.alibaba.cloud.ai.dataagent.controller;
 
-import com.alibaba.cloud.ai.dataagent.enums.ModelType;
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigDataService;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigOpsService;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConnectionErrorClassifier;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConnectionTestException;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelReadinessService;
 import com.alibaba.cloud.ai.dataagent.vo.ApiResponse;
 import com.alibaba.cloud.ai.dataagent.vo.ModelCheckVo;
 import jakarta.validation.Valid;
@@ -35,6 +37,8 @@ public class ModelConfigController {
 	private final ModelConfigDataService modelConfigDataService;
 
 	private final ModelConfigOpsService modelConfigOpsService;
+
+	private final ModelReadinessService modelReadinessService;
 
 	// 1. 获取列表
 	@GetMapping("/list")
@@ -76,6 +80,7 @@ public class ModelConfigController {
 	public ApiResponse<String> delete(@PathVariable Integer id) {
 		try {
 			modelConfigDataService.deleteConfig(id);
+			modelReadinessService.invalidate(id);
 			return ApiResponse.success("配置已删除");
 		}
 		catch (Exception e) {
@@ -102,34 +107,24 @@ public class ModelConfigController {
 	public ApiResponse<String> testConnection(@PathVariable Integer id) {
 		try {
 			modelConfigOpsService.testConnection(id);
-			return ApiResponse.success("连接测试成功！模型可用。");
+			return ApiResponse.success("连接测试成功！");
+		}
+		catch (ModelConnectionTestException e) {
+			return ApiResponse.errorWithCode(e.code(), e.getMessage());
 		}
 		catch (Exception e) {
-			// 捕获具体的错误信息（如 401 Invalid Key, 404 Not Found 等）返回给前端
-			return ApiResponse.error("连接测试失败: " + e.getMessage());
+			// Do not expose provider exceptions or request details to the client.
+			return ApiResponse.errorWithCode(ModelConnectionErrorClassifier.CONNECTION_TEST_FAILED,
+					"连接测试失败，请检查模型配置或稍后重试。");
 		}
 	}
 
 	/**
-	 * 7. 检查模型配置是否就绪（聊天模型和嵌入模型都需要配置）
+	 * 7. 检查模型配置与连接验证状态。此接口只读，不会自动调用模型。
 	 */
 	@GetMapping("/check-ready")
 	public ApiResponse<ModelCheckVo> checkReady() {
-		// 检查聊天模型是否已配置且启用
-		ModelConfigDTO chatModel = modelConfigDataService.getActiveConfigByType(ModelType.CHAT);
-		// 检查嵌入模型是否已配置且启用
-		ModelConfigDTO embeddingModel = modelConfigDataService.getActiveConfigByType(ModelType.EMBEDDING);
-
-		boolean chatModelReady = chatModel != null;
-		boolean embeddingModelReady = embeddingModel != null;
-		boolean ready = chatModelReady && embeddingModelReady;
-
-		return ApiResponse.success("模型配置检查完成",
-				ModelCheckVo.builder()
-					.chatModelReady(chatModelReady)
-					.embeddingModelReady(embeddingModelReady)
-					.ready(ready)
-					.build());
+		return ApiResponse.success("模型配置检查完成", modelReadinessService.readiness());
 	}
 
 }

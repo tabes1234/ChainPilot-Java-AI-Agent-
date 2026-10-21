@@ -17,8 +17,8 @@
 <template>
 	<section class="page-shell">
 		<KnowledgePageHeader
-			title="语义模型配置"
-			subtitle="维护字段语义映射，统一业务口径，提升 SQL 生成准确性。"
+			title="语义模型"
+			subtitle="维护字段业务含义与同义词，统一口径，提升问数结果的一致性。"
 		>
 			<template #actions>
 				<v-btn
@@ -79,8 +79,8 @@
 				</v-btn>
 				<v-spacer />
 				<v-chip
-					color="blue-lighten-5"
-					variant="flat"
+					color="blue-darken-3"
+					variant="tonal"
 					class="font-weight-medium"
 				>
 					总数 {{ semanticModelList.length }}
@@ -142,13 +142,17 @@
 							variant="text"
 							color="blue-darken-1"
 							icon="mdi-pencil"
+							aria-label="编辑语义模型"
+							title="编辑语义模型"
 							@click="editModel(item)"
 						/>
 						<v-btn
 							size="small"
 							variant="text"
-							:color="item.status === 1 ? 'orange-darken-1' : 'success'"
+							:color="item.status === 1 ? 'orange-darken-3' : 'success'"
 							:icon="item.status === 1 ? 'mdi-pause-circle' : 'mdi-play-circle'"
+							:aria-label="item.status === 1 ? '停用语义模型' : '启用语义模型'"
+							:title="item.status === 1 ? '停用' : '启用'"
 							@click="toggleStatus(item, item.status === 1 ? 0 : 1)"
 						>
 							<v-tooltip activator="parent" location="top">{{
@@ -160,6 +164,8 @@
 							variant="text"
 							color="red-darken-1"
 							icon="mdi-delete"
+							aria-label="删除语义模型"
+							title="删除语义模型"
 							@click="deleteModel(item)"
 						/>
 					</div>
@@ -208,6 +214,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭语义模型对话框"
+						title="关闭"
 						@click="closeDialog"
 					/>
 				</v-card-title>
@@ -358,6 +366,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭批量导入对话框"
+						title="关闭"
 						@click="batchImportDialogVisible = false"
 					/>
 				</v-card-title>
@@ -463,14 +473,14 @@ function openCreateDialog() {
 }
 
 const headers = [
-	{ title: '表名', key: 'tableName', minWidth: '120px' },
-	{ title: '字段名', key: 'columnName', minWidth: '130px' },
-	{ title: '业务名称', key: 'businessName', minWidth: '140px' },
-	{ title: '同义词', key: 'synonyms', minWidth: '170px', sortable: false },
-	{ title: '数据类型', key: 'dataType', width: '110px' },
-	{ title: '状态', key: 'status', width: '100px', sortable: false },
-	{ title: '创建时间', key: 'createdTime', width: '180px' },
-	{ title: '操作', key: 'actions', width: '140px', sortable: false },
+	{ title: '表名', key: 'tableName', minWidth: '100px' },
+	{ title: '字段名', key: 'columnName', minWidth: '100px' },
+	{ title: '业务名称', key: 'businessName', minWidth: '110px' },
+	{ title: '同义词', key: 'synonyms', minWidth: '120px', sortable: false },
+	{ title: '数据类型', key: 'dataType', width: '90px' },
+	{ title: '状态', key: 'status', width: '80px', sortable: false },
+	{ title: '创建时间', key: 'createdTime', width: '130px' },
+	{ title: '操作', key: 'actions', width: '110px', sortable: false },
 ];
 
 function formatDateTime(dateTime?: string) {

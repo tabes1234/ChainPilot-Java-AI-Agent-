@@ -15,6 +15,8 @@
  */
 
 // https://nuxt.com/docs/api/configuration/nuxt-config
+const backendUrl = process.env.CHAINPILOT_BACKEND_URL || 'http://localhost:8065';
+
 export default defineNuxtConfig({
 	compatibilityDate: '2025-07-15',
 	devtools: { enabled: true },
@@ -41,6 +43,23 @@ export default defineNuxtConfig({
 			defaults: {
 				VBtn: { variant: 'outlined' },
 			},
+			theme: {
+				defaultTheme: 'light',
+				themes: {
+					light: {
+						colors: {
+							background: '#f7fbff',
+							surface: '#ffffff',
+							primary: '#35629d',
+							secondary: '#3e9487',
+							info: '#2f739c',
+							success: '#357b5b',
+							warning: '#96682d',
+							error: '#b9575c',
+						},
+					},
+				},
+			},
 		},
 	},
 	vite: {
@@ -59,12 +78,10 @@ export default defineNuxtConfig({
 	},
 	//全局关闭ssr
 	ssr: false,
-	// /路由重定向到/create-agent
 	routeRules: {
-		'/': { redirect: '/agent/new' },
 		// 代理所有 /api/** 的请求到 Java 后端
-		'/api/**': { proxy: 'http://localhost:8065/api/**' },
-		'/nl2sql/**': { proxy: 'http://localhost:8065/nl2sql/**' },
+		'/api/**': { proxy: `${backendUrl}/api/**` },
+		'/nl2sql/**': { proxy: `${backendUrl}/nl2sql/**` },
 	},
 	//全局动画配置
 	app: {

@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.service.aimodelconfig;
 
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
 import com.alibaba.cloud.ai.dataagent.enums.ModelType;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -48,7 +49,7 @@ class AiModelRegistryTest {
 
 	@BeforeEach
 	void setUp() {
-		registry = new AiModelRegistry(modelFactory, modelConfigDataService);
+		registry = new AiModelRegistry(modelFactory, modelConfigDataService, ObservationRegistry.NOOP);
 	}
 
 	@Test

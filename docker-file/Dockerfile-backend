@@ -43,10 +43,10 @@ RUN apt update && apt install -y maven git
 #</settings>' > aliyun-settings.xml
 
 # 复制本地代码到构建容器
-COPY . /app/DataAgent
+COPY . /app/ChainPilot
 
 # 进入项目目录并构建
-WORKDIR /app/DataAgent
+WORKDIR /app/ChainPilot
 RUN mvn install -DskipTests
 #    mvn install -DskipTests -s ../aliyun-settings.xml
 
@@ -54,7 +54,7 @@ FROM eclipse-temurin:17-jdk-jammy
 
 WORKDIR /app
 
-COPY --from=build /app/DataAgent/data-agent-management/target/spring-ai-alibaba-data-agent-management-1.0.0-SNAPSHOT.jar /app/app.jar
+COPY --from=build /app/ChainPilot/data-agent-management/target/chainpilot-management-1.0.0-SNAPSHOT.jar /app/app.jar
 
 RUN apt update && apt install -y python3
 

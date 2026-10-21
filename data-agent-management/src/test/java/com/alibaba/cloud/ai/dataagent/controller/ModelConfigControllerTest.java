@@ -16,9 +16,11 @@
 package com.alibaba.cloud.ai.dataagent.controller;
 
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
-import com.alibaba.cloud.ai.dataagent.enums.ModelType;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigDataService;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigOpsService;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConnectionErrorClassifier;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConnectionTestException;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelReadinessService;
 import com.alibaba.cloud.ai.dataagent.vo.ApiResponse;
 import com.alibaba.cloud.ai.dataagent.vo.ModelCheckVo;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,11 +42,15 @@ class ModelConfigControllerTest {
 	@Mock
 	private ModelConfigOpsService modelConfigOpsService;
 
+	@Mock
+	private ModelReadinessService modelReadinessService;
+
 	private ModelConfigController modelConfigController;
 
 	@BeforeEach
 	void setUp() {
-		modelConfigController = new ModelConfigController(modelConfigDataService, modelConfigOpsService);
+		modelConfigController = new ModelConfigController(modelConfigDataService, modelConfigOpsService,
+				modelReadinessService);
 	}
 
 	@Test
@@ -94,32 +100,72 @@ class ModelConfigControllerTest {
 	}
 
 	@Test
-	void checkReady_allConfigured_returnsReady() {
-		ModelConfigDTO chatConfig = ModelConfigDTO.builder().modelType("CHAT").isActive(true).build();
-		ModelConfigDTO embeddingConfig = ModelConfigDTO.builder().modelType("EMBEDDING").isActive(true).build();
-		when(modelConfigDataService.getActiveConfigByType(ModelType.CHAT)).thenReturn(chatConfig);
-		when(modelConfigDataService.getActiveConfigByType(ModelType.EMBEDDING)).thenReturn(embeddingConfig);
+	void testConnection_classifiedFailureReturnsSafeCodeAndMessage() {
+		doThrow(new ModelConnectionTestException(ModelConnectionErrorClassifier.AUTHENTICATION_FAILED,
+				"鉴权失败，请检查 API Key 或访问权限。")).when(modelConfigOpsService).testConnection(1);
+
+		ApiResponse<String> result = modelConfigController.testConnection(1);
+
+		assertFalse(result.isSuccess());
+		assertEquals(ModelConnectionErrorClassifier.AUTHENTICATION_FAILED, result.getCode());
+		assertEquals("鉴权失败，请检查 API Key 或访问权限。", result.getMessage());
+	}
+
+	@Test
+	void testConnection_unexpectedFailureNeverEchoesRawException() {
+		doThrow(new RuntimeException("Authorization: Bearer canary-controller-secret"))
+			.when(modelConfigOpsService).testConnection(1);
+
+		ApiResponse<String> result = modelConfigController.testConnection(1);
+
+		assertFalse(result.isSuccess());
+		assertEquals(ModelConnectionErrorClassifier.CONNECTION_TEST_FAILED, result.getCode());
+		assertFalse(result.getMessage().contains("canary-controller-secret"));
+		assertFalse(result.getMessage().contains("Authorization"));
+	}
+
+	@Test
+	void checkReady_delegatesToReadinessServiceAndExposesAgentGate() {
+		when(modelReadinessService.readiness()).thenReturn(ModelCheckVo.builder()
+			.chatModelReady(true)
+			.embeddingModelReady(false)
+			.ready(false)
+			.chatConnectionVerified(true)
+			.chatState(ModelReadinessService.STATE_VERIFIED)
+			.embeddingState(ModelReadinessService.STATE_NOT_CONFIGURED)
+			.embeddingRequiredForAgentEvaluation(false)
+			.agentEvaluationReady(true)
+			.verificationScope(ModelReadinessService.VERIFICATION_SCOPE)
+			.build());
 
 		ApiResponse<ModelCheckVo> result = modelConfigController.checkReady();
 
 		assertTrue(result.isSuccess());
-		assertTrue(result.getData().isReady());
 		assertTrue(result.getData().isChatModelReady());
-		assertTrue(result.getData().isEmbeddingModelReady());
+		assertFalse(result.getData().isEmbeddingModelReady());
+		assertTrue(result.getData().isChatConnectionVerified());
+		assertTrue(result.getData().isAgentEvaluationReady());
+		assertFalse(result.getData().isEmbeddingRequiredForAgentEvaluation());
+		verify(modelReadinessService).readiness();
+		verifyNoInteractions(modelConfigDataService);
 	}
 
 	@Test
-	void checkReady_missingEmbedding_returnsNotReady() {
-		ModelConfigDTO chatConfig = ModelConfigDTO.builder().modelType("CHAT").isActive(true).build();
-		when(modelConfigDataService.getActiveConfigByType(ModelType.CHAT)).thenReturn(chatConfig);
-		when(modelConfigDataService.getActiveConfigByType(ModelType.EMBEDDING)).thenReturn(null);
+	void checkReady_unverifiedChatIsNotAgentReady() {
+		when(modelReadinessService.readiness()).thenReturn(ModelCheckVo.builder()
+			.chatModelReady(true)
+			.chatConnectionVerified(false)
+			.chatState(ModelReadinessService.STATE_CONFIGURED_UNVERIFIED)
+			.agentEvaluationReady(false)
+			.agentEvaluationBlockReason("CHAT 模型尚未完成手动连接测试")
+			.build());
 
 		ApiResponse<ModelCheckVo> result = modelConfigController.checkReady();
 
 		assertTrue(result.isSuccess());
 		assertFalse(result.getData().isReady());
-		assertTrue(result.getData().isChatModelReady());
-		assertFalse(result.getData().isEmbeddingModelReady());
+		assertFalse(result.getData().isAgentEvaluationReady());
+		assertTrue(result.getData().getAgentEvaluationBlockReason().contains("手动连接测试"));
 	}
 
 }

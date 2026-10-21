@@ -26,10 +26,49 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class ModelCheckVo {
 
+	// Backward-compatible fields: "ready" here still means both model types are configured.
 	boolean chatModelReady;
 
 	boolean embeddingModelReady;
 
 	boolean ready;
+
+	boolean chatConnectionVerified;
+
+	boolean embeddingConnectionVerified;
+
+	String chatState;
+
+	String embeddingState;
+
+	String chatProvider;
+
+	String chatModelName;
+
+	String chatBaseUrl;
+
+	String embeddingProvider;
+
+	String embeddingModelName;
+
+	String embeddingBaseUrl;
+
+	String chatTestedAt;
+
+	String embeddingTestedAt;
+
+	String chatTestError;
+
+	String embeddingTestError;
+
+	boolean embeddingRequiredForAgentEvaluation;
+
+	String embeddingDependencyNote;
+
+	boolean agentEvaluationReady;
+
+	String agentEvaluationBlockReason;
+
+	String verificationScope;
 
 }

@@ -19,7 +19,7 @@
 		<v-card rounded="xl" class="pa-2">
 			<v-card-title class="d-flex align-center justify-space-between px-4 pt-4">
 				<span class="text-h6 font-weight-bold">{{ isEdit ? '编辑数据源' : '添加数据源' }}</span>
-				<v-btn icon="mdi-close" variant="text" size="small" @click="$emit('update:modelValue', false)" />
+				<v-btn icon="mdi-close" variant="text" size="small" aria-label="关闭数据源对话框" title="关闭" @click="$emit('update:modelValue', false)" />
 			</v-card-title>
 
 			<v-card-text class="pt-4">

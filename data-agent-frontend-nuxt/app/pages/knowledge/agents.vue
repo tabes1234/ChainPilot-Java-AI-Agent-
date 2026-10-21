@@ -16,16 +16,11 @@
 
 <template>
 	<section class="page-shell">
-		<header class="d-flex align-center justify-space-between mb-8">
-			<div>
-				<h1 class="text-h4 font-weight-bold mb-1" style="color: #1565c0">
-					智能体知识库
-				</h1>
-				<p class="text-body-2 text-medium-emphasis">
-					维护智能体专属知识资源，支持文档上传、问答配置与向量召回。
-				</p>
-			</div>
-			<div class="d-flex ga-3">
+		<KnowledgePageHeader
+			title="智能体知识"
+			subtitle="按智能体维护文档、问答和知识资源，支持上传、向量召回与内容更新。"
+		>
+			<template #actions>
 				<v-btn
 					class="text-none bg-white"
 					style="border-color: #e2e8f0"
@@ -37,7 +32,7 @@
 					刷新
 				</v-btn>
 				<v-btn
-					:color="filterVisible ? 'blue-darken-1' : 'blue-grey-lighten-1'"
+					:color="filterVisible ? 'blue-darken-1' : 'blue-grey-darken-2'"
 					prepend-icon="mdi-filter-variant"
 					class="text-none px-6"
 					elevation="0"
@@ -54,8 +49,8 @@
 				>
 					添加知识
 				</v-btn>
-			</div>
-		</header>
+			</template>
+		</KnowledgePageHeader>
 
 		<v-card variant="flat" border class="rounded-lg mb-4 pa-4">
 			<div class="d-flex flex-wrap ga-3 align-center">
@@ -74,8 +69,8 @@
 				/>
 				<v-spacer />
 				<v-chip
-					color="blue-lighten-5"
-					variant="flat"
+					color="blue-darken-3"
+					variant="tonal"
 					class="font-weight-medium"
 				>
 					总数 {{ total }}
@@ -169,7 +164,7 @@
 							size="14"
 							class="mr-1"
 						/>
-						{{ item.embeddingStatus || '未知' }}
+						{{ getEmbeddingStatusLabel(item.embeddingStatus) }}
 					</v-chip>
 					<v-tooltip
 						v-if="item.embeddingStatus === 'FAILED' && item.errorMsg"
@@ -207,14 +202,18 @@
 							variant="text"
 							color="blue-darken-1"
 							icon="mdi-cog"
+							aria-label="编辑知识"
+							title="编辑知识"
 							@click="editKnowledge(item)"
 						/>
 						<v-btn
 							v-if="item.embeddingStatus === 'FAILED'"
 							size="small"
 							variant="text"
-							color="orange-darken-1"
+							color="orange-darken-3"
 							icon="mdi-reload"
+							aria-label="重试向量化"
+							title="重试向量化"
 							:loading="
 								item.id !== undefined ? retryLoadingMap[item.id] : false
 							"
@@ -225,6 +224,8 @@
 							variant="text"
 							:color="item.isRecall ? 'grey-darken-1' : 'blue-darken-1'"
 							:icon="item.isRecall ? 'mdi-bookmark-off' : 'mdi-bookmark-plus'"
+							:aria-label="item.isRecall ? '取消召回' : '设为召回'"
+							:title="item.isRecall ? '取消召回' : '设为召回'"
 							@click="toggleStatus(item)"
 						>
 							<v-tooltip activator="parent" location="top">{{
@@ -236,6 +237,8 @@
 							variant="text"
 							color="red-darken-1"
 							icon="mdi-delete"
+							aria-label="删除知识"
+							title="删除知识"
 							@click="deleteKnowledge(item)"
 						/>
 					</div>
@@ -267,7 +270,7 @@
 			</v-data-table>
 
 			<div
-				class="d-flex align-center justify-end ga-4 px-4 py-4"
+				class="d-flex align-center justify-end flex-wrap ga-4 px-4 py-4"
 				style="border-top: 1px solid #e2e8f0"
 			>
 				<v-select
@@ -306,6 +309,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭知识对话框"
+						title="关闭"
 						@click="closeDialog"
 					/>
 				</v-card-title>
@@ -665,11 +670,11 @@ function getTypeLabel(type?: string) {
 function getTypeColor(type?: string) {
 	switch (type) {
 		case 'DOCUMENT':
-			return 'blue-darken-1';
+			return 'blue-darken-3';
 		case 'QA':
-			return 'indigo';
+			return 'indigo-darken-2';
 		case 'FAQ':
-			return 'cyan-darken-1';
+			return 'cyan-darken-3';
 		default:
 			return 'grey';
 	}
@@ -688,6 +693,17 @@ function getEmbeddingStatusColor(status?: string) {
 		default:
 			return 'grey';
 	}
+}
+
+const embeddingStatusLabels: Record<string, string> = {
+	COMPLETED: '已完成',
+	PROCESSING: '处理中',
+	FAILED: '失败',
+	PENDING: '等待中',
+};
+
+function getEmbeddingStatusLabel(status?: string) {
+	return (status && embeddingStatusLabels[status]) || status || '未知';
 }
 
 function toggleFilter() {

@@ -31,6 +31,7 @@
 					size="small"
 					class="toggle-btn"
 					title="折叠侧边栏"
+					aria-label="折叠历史会话"
 					@click="store.chatSidebarCollapsed = true"
 				>
 					<v-icon size="18">mdi-chevron-left</v-icon>
@@ -75,6 +76,7 @@
 								size="x-small"
 								class="action-btn--edit"
 								title="重命名"
+								aria-label="重命名会话"
 								@click.stop="startEdit(session)"
 							>
 								<v-icon size="14">mdi-pencil-outline</v-icon>
@@ -86,6 +88,7 @@
 								size="x-small"
 								class="action-btn--star"
 								title="收藏"
+								:aria-label="session.isPinned ? '取消收藏会话' : '收藏会话'"
 								@click.stop="handlePin(session)"
 							>
 								<v-icon size="14" :color="session.isPinned ? '#f59e0b' : ''">
@@ -99,6 +102,7 @@
 								size="x-small"
 								class="action-btn--danger"
 								title="删除"
+								aria-label="删除会话"
 								@click.stop="handleDelete(session)"
 							>
 								<v-icon size="14">mdi-delete-outline</v-icon>
@@ -322,7 +326,7 @@ async function confirmDelete() {
 }
 
 .toggle-btn {
-	color: #94a3b8 !important;
+	color: #60758f !important;
 }
 .toggle-btn:hover {
 	color: #3b82f6 !important;
@@ -336,9 +340,9 @@ async function confirmDelete() {
 }
 
 .session-group-label {
-	font-size: 11px;
+	font-size: 13px;
 	font-weight: 600;
-	color: #94a3b8;
+	color: #5a708c;
 	letter-spacing: 0.5px;
 	text-transform: uppercase;
 	padding: 8px 8px 6px;
@@ -380,8 +384,8 @@ async function confirmDelete() {
 }
 
 .session-item-time {
-	font-size: 11px;
-	color: #94a3b8;
+	font-size: 13px;
+	color: #526a85;
 	font-style: italic;
 	line-height: 1.2;
 }
@@ -430,7 +434,7 @@ async function confirmDelete() {
 .empty-sessions {
 	text-align: center;
 	font-size: 12px;
-	color: #94a3b8;
+	color: #5a708c;
 	padding: 20px 0;
 }
 

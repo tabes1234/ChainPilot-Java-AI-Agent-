@@ -29,6 +29,8 @@ public class ApiResponse<T> {
 
 	private String message;
 
+	private String code;
+
 	private T data;
 
 	public ApiResponse(boolean success, String message) {
@@ -52,6 +54,12 @@ public class ApiResponse<T> {
 
 	public static <T> ApiResponse<T> error(String message) {
 		return new ApiResponse<>(false, message);
+	}
+
+	public static <T> ApiResponse<T> errorWithCode(String code, String message) {
+		ApiResponse<T> response = new ApiResponse<>(false, message);
+		response.code = code;
+		return response;
 	}
 
 	public static <T> ApiResponse<T> error(String message, T data) {

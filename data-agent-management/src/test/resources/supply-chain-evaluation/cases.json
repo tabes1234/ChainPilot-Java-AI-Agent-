@@ -1,0 +1,266 @@
+{
+  "datasetVersion": "1.0.0",
+  "description": "ChainPilot 供应链确定性离线评测基线。期望值逐项来自 SupplyChainDemoData 的演示记录、SupplyChainQueryService 的风险公式以及本地 SOP 词法检索结果；每个样本的 basis 说明依据。",
+  "cases": [
+    {
+      "id": "ORDER-ORD-1001",
+      "kind": "ORDER_RISK",
+      "scenario": "延期、库存短缺且供应商高风险的组合订单",
+      "targetId": "ORD-1001",
+      "basis": "SupplyChainDemoData ORD-1001：SKU-MCU-001，数量 120，SUP-ALPHA，请求日期 +2 天，预计日期 +5 天，IN_TRANSIT。SupplyChainQueryService.assess：延期 3 天计 35 分，ATP 20 导致短缺 100 计 39 分，高风险供应商计 40 分，总分 114 封顶 100；标签阈值 score >= 60 为 HIGH。",
+      "risk": {
+        "level": "HIGH",
+        "score": 100,
+        "shortage": 100,
+        "atRisk": true,
+        "factorFragments": [
+          "3 day(s) after the requested date",
+          "short by 100 unit(s)",
+          "Supplier risk is HIGH",
+          "72%"
+        ],
+        "actionFragments": [
+          "recovery date",
+          "alternate stock",
+          "backup source"
+        ]
+      }
+    },
+    {
+      "id": "ORDER-ORD-1002",
+      "kind": "ORDER_RISK",
+      "scenario": "中等供应商风险叠加延期和库存不足的订单",
+      "targetId": "ORD-1002",
+      "basis": "SupplyChainDemoData ORD-1002：SKU-SENSOR-002，数量 80，SUP-BRAVO，请求日期 +4 天，预计日期 +6 天，CONFIRMED。SupplyChainQueryService.assess：延期 2 天计 30 分，ATP 25 导致短缺 55 计 37 分，中风险供应商计 30 分，总分 97；标签 HIGH。",
+      "risk": {
+        "level": "HIGH",
+        "score": 97,
+        "shortage": 55,
+        "atRisk": true,
+        "factorFragments": [
+          "2 day(s) after the requested date",
+          "short by 55 unit(s)",
+          "Supplier risk is MEDIUM",
+          "89%"
+        ],
+        "actionFragments": [
+          "recovery date",
+          "alternate stock",
+          "capacity confirmation"
+        ]
+      }
+    },
+    {
+      "id": "ORDER-ORD-1003",
+      "kind": "ORDER_RISK",
+      "scenario": "不应被标记为风险的正常订单对照样本",
+      "targetId": "ORD-1003",
+      "basis": "SupplyChainDemoData ORD-1003：SKU-VALVE-003，数量 30，SUP-GAMMA，请求日期和预计日期均为 +8 天，CONFIRMED。SupplyChainQueryService.assess：无延期、ATP 75 足够、供应商 LOW，总分 0，标签 LOW。",
+      "risk": {
+        "level": "LOW",
+        "score": 0,
+        "shortage": 0,
+        "atRisk": false,
+        "factorFragments": [
+          "No delay, inventory, or supplier risk indicator found"
+        ],
+        "actionFragments": [
+          "Continue routine monitoring"
+        ]
+      }
+    },
+    {
+      "id": "ORDER-ORD-1004",
+      "kind": "ORDER_RISK",
+      "scenario": "DELAYED 状态叠加严重缺货和高风险供应商的订单",
+      "targetId": "ORD-1004",
+      "basis": "SupplyChainDemoData ORD-1004：SKU-BATTERY-004，数量 200，SUP-ALPHA，请求日期 +1 天，预计日期 +4 天，DELAYED。SupplyChainQueryService.assess：DELAYED 固定计 30 分，ATP 25 导致短缺 175 计 39 分，高风险供应商计 40 分，总分 109 封顶 100；标签 HIGH。",
+      "risk": {
+        "level": "HIGH",
+        "score": 100,
+        "shortage": 175,
+        "atRisk": true,
+        "factorFragments": [
+          "3 day(s) after the requested date",
+          "short by 175 unit(s)",
+          "Supplier risk is HIGH",
+          "72%"
+        ],
+        "actionFragments": [
+          "recovery date",
+          "alternate stock",
+          "backup source"
+        ]
+      }
+    },
+    {
+      "id": "INVENTORY-SKU-MCU-001",
+      "kind": "INVENTORY",
+      "scenario": "MCU 库存快照与可承诺量计算",
+      "targetId": "SKU-MCU-001",
+      "basis": "SupplyChainDemoData 库存记录 SKU-MCU-001：onHand 55，reserved 15，safetyStock 20；InventoryPosition.availableToPromise = max(0, 55 - 15 - 20) = 20。",
+      "inventory": {
+        "onHandQuantity": 55,
+        "reservedQuantity": 15,
+        "safetyStock": 20,
+        "availableToPromise": 20
+      }
+    },
+    {
+      "id": "INVENTORY-SKU-SENSOR-002",
+      "kind": "INVENTORY",
+      "scenario": "传感器库存快照与可承诺量计算",
+      "targetId": "SKU-SENSOR-002",
+      "basis": "SupplyChainDemoData 库存记录 SKU-SENSOR-002：onHand 50，reserved 15，safetyStock 10；availableToPromise = max(0, 50 - 15 - 10) = 25。",
+      "inventory": {
+        "onHandQuantity": 50,
+        "reservedQuantity": 15,
+        "safetyStock": 10,
+        "availableToPromise": 25
+      }
+    },
+    {
+      "id": "INVENTORY-SKU-VALVE-003",
+      "kind": "INVENTORY",
+      "scenario": "阀门库存充足的正向对照样本",
+      "targetId": "SKU-VALVE-003",
+      "basis": "SupplyChainDemoData 库存记录 SKU-VALVE-003：onHand 100，reserved 10，safetyStock 15；availableToPromise = max(0, 100 - 10 - 15) = 75。",
+      "inventory": {
+        "onHandQuantity": 100,
+        "reservedQuantity": 10,
+        "safetyStock": 15,
+        "availableToPromise": 75
+      }
+    },
+    {
+      "id": "INVENTORY-SKU-BATTERY-004",
+      "kind": "INVENTORY",
+      "scenario": "电池库存快照与可承诺量计算",
+      "targetId": "SKU-BATTERY-004",
+      "basis": "SupplyChainDemoData 库存记录 SKU-BATTERY-004：onHand 70，reserved 25，safetyStock 20；availableToPromise = max(0, 70 - 25 - 20) = 25。",
+      "inventory": {
+        "onHandQuantity": 70,
+        "reservedQuantity": 25,
+        "safetyStock": 20,
+        "availableToPromise": 25
+      }
+    },
+    {
+      "id": "SUPPLIER-SUP-ALPHA",
+      "kind": "SUPPLIER",
+      "scenario": "高风险供应商画像",
+      "targetId": "SUP-ALPHA",
+      "basis": "SupplyChainDemoData 供应商记录 SUP-ALPHA：riskLevel HIGH，onTimeDeliveryRate 0.72，defectRate 0.041。",
+      "supplier": {
+        "level": "HIGH",
+        "onTimeDeliveryRate": 0.72,
+        "defectRate": 0.041
+      }
+    },
+    {
+      "id": "SUPPLIER-SUP-BRAVO",
+      "kind": "SUPPLIER",
+      "scenario": "中风险供应商画像",
+      "targetId": "SUP-BRAVO",
+      "basis": "SupplyChainDemoData 供应商记录 SUP-BRAVO：riskLevel MEDIUM，onTimeDeliveryRate 0.89，defectRate 0.018。",
+      "supplier": {
+        "level": "MEDIUM",
+        "onTimeDeliveryRate": 0.89,
+        "defectRate": 0.018
+      }
+    },
+    {
+      "id": "SUPPLIER-SUP-GAMMA",
+      "kind": "SUPPLIER",
+      "scenario": "低风险供应商对照样本",
+      "targetId": "SUP-GAMMA",
+      "basis": "SupplyChainDemoData 供应商记录 SUP-GAMMA：riskLevel LOW，onTimeDeliveryRate 0.97，defectRate 0.006。",
+      "supplier": {
+        "level": "LOW",
+        "onTimeDeliveryRate": 0.97,
+        "defectRate": 0.006
+      }
+    },
+    {
+      "id": "RETRIEVAL-SOP-001",
+      "kind": "RETRIEVAL",
+      "scenario": "延期订单应命中履约与恢复日期 SOP",
+      "question": "订单延期后如何确认供应商恢复日期？",
+      "basis": "当前没有 VectorStore，SupplyChainKnowledgeService.retrieve 走本地词法匹配；问题包含订单、延期、供应商、恢复等关键词，SC-SOP-001 记录恢复日期和客户通知规则。",
+      "retrieval": {
+        "expectedSourceIds": [
+          "SC-SOP-001-order-fulfillment.md"
+        ]
+      }
+    },
+    {
+      "id": "RETRIEVAL-SOP-002",
+      "kind": "RETRIEVAL",
+      "scenario": "库存不足应命中可承诺库存与安全库存 SOP",
+      "question": "可承诺库存不足时如何处理安全库存和预留量？",
+      "basis": "当前没有 VectorStore，SupplyChainKnowledgeService.retrieve 走本地词法匹配；问题包含可承诺库存、安全库存、预留量等关键词，SC-SOP-002 记录 ATP 和缺料处理规则。",
+      "retrieval": {
+        "expectedSourceIds": [
+          "SC-SOP-002-inventory-allocation.md"
+        ]
+      }
+    },
+    {
+      "id": "RETRIEVAL-SOP-003",
+      "kind": "RETRIEVAL",
+      "scenario": "供应商风险应命中履约率与备选供应商 SOP",
+      "question": "供应商风险、履约率和缺陷率应如何处理，是否需要备选供应商？",
+      "basis": "当前没有 VectorStore，SupplyChainKnowledgeService.retrieve 走本地词法匹配；问题包含供应商风险、履约率、缺陷率、备选供应商等关键词，SC-SOP-003 的正文与关键词记录高风险供应商恢复计划和备选源规则，词法得分应高于其他 SOP。",
+      "retrieval": {
+        "expectedSourceIds": [
+          "SC-SOP-003-supplier-risk.md"
+        ]
+      }
+    },
+    {
+      "id": "REPORT-FALLBACK-NO-MODEL",
+      "kind": "REPORT_FALLBACK",
+      "scenario": "聊天模型未配置时完整工作流必须完成并如实标记规则降级",
+      "question": "分析今天可能延期的订单，结合库存和供应商风险，给出处理建议。",
+      "basis": "使用真实 StateGraph、SupplyChainAgentTools、SupplyChainQueryService、SupplyChainAnalysisService、H2 任务与事件仓库，但 ModelConfigDataService 不返回任何 CHAT 配置，因此规划和报告均走确定性降级。SupplyChainAnalysisService 的 DEFAULT_PLAN 为 5 步，确定性摘要报告 3 个风险订单和 3 个高风险订单，事件应记录两次 MODEL_FAILED 与两次 FALLBACK_USED。",
+      "report": {
+        "status": "COMPLETED",
+        "atRiskOrderIds": [
+          "ORD-1001",
+          "ORD-1002",
+          "ORD-1004"
+        ],
+        "summaryFragments": [
+          "发现 3 个存在风险的订单",
+          "高风险 3 个"
+        ],
+        "citationSourceIds": [
+          "SC-SOP-001-order-fulfillment.md",
+          "SC-SOP-002-inventory-allocation.md",
+          "SC-SOP-003-supplier-risk.md"
+        ],
+        "recommendationFragments": [
+          "recovery date",
+          "alternate stock",
+          "backup source"
+        ],
+        "planSteps": [
+          "查询延期和高风险订单",
+          "核对相关 SKU 可承诺库存",
+          "检查相关供应商履约风险",
+          "校验订单、库存和供应商证据",
+          "检索供应链 SOP 并生成建议"
+        ],
+        "plannerAssisted": false,
+        "modelAssisted": false,
+        "toolCallsEmpty": true,
+        "validationAttempts": 0,
+        "modelFailedEvents": 2,
+        "fallbackEvents": 2,
+        "modelCompletedEvents": 0,
+        "taskCompleted": true,
+        "taskFailed": false
+      }
+    }
+  ]
+}

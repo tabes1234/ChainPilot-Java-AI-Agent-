@@ -18,7 +18,7 @@
 	<section class="page-shell">
 		<KnowledgePageHeader
 			title="提示词配置"
-			subtitle="维护增强式提示词配置，支持多配置启用、批量操作与优先级管理。"
+			subtitle="维护 Agent 使用的提示词模板、启用状态与优先级。"
 		>
 			<template #actions>
 				<v-btn
@@ -43,7 +43,7 @@
 				</v-btn>
 				<v-btn
 					v-if="selectedIds.length > 0"
-					color="orange-darken-1"
+					color="deep-orange-darken-2"
 					prepend-icon="mdi-pause-circle"
 					class="text-none"
 					elevation="0"
@@ -102,8 +102,8 @@
 				/>
 				<v-spacer />
 				<v-chip
-					color="blue-lighten-5"
-					variant="flat"
+					color="blue-darken-3"
+					variant="tonal"
 					class="font-weight-medium"
 				>
 					{{ filteredConfigs.length }} 条
@@ -182,20 +182,26 @@
 							variant="text"
 							color="blue-darken-1"
 							icon="mdi-pencil"
+							aria-label="编辑提示词配置"
+							title="编辑提示词配置"
 							@click="editConfig(item)"
 						/>
 						<v-btn
 							size="small"
 							variant="text"
-							color="amber-darken-2"
+							color="orange-darken-3"
 							icon="mdi-sort-numeric-descending"
+							aria-label="设置优先级"
+							title="设置优先级"
 							@click="openPriorityDialog(item)"
 						/>
 						<v-btn
 							size="small"
 							variant="text"
-							:color="item.enabled ? 'orange-darken-1' : 'success'"
+							:color="item.enabled ? 'orange-darken-3' : 'success'"
 							:icon="item.enabled ? 'mdi-pause-circle' : 'mdi-check-circle'"
+							:aria-label="item.enabled ? '禁用提示词配置' : '启用提示词配置'"
+							:title="item.enabled ? '禁用' : '启用'"
 							@click="toggleEnabled(item)"
 						>
 							<v-tooltip activator="parent" location="top">{{
@@ -207,6 +213,8 @@
 							variant="text"
 							color="red-darken-1"
 							icon="mdi-delete"
+							aria-label="删除提示词配置"
+							title="删除提示词配置"
 							@click="deleteConfig(item)"
 						/>
 					</div>
@@ -255,6 +263,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭提示词对话框"
+						title="关闭"
 						@click="closeDialog"
 					/>
 				</v-card-title>
@@ -370,6 +380,8 @@
 						icon="mdi-close"
 						variant="text"
 						size="small"
+						aria-label="关闭优先级对话框"
+						title="关闭"
 						@click="closePriorityDialog"
 					/>
 				</v-card-title>
@@ -428,18 +440,18 @@ const rawConfigs = ref<PromptConfig[]>([]);
 const agentOptions = ref<{ title: string; value: number }[]>([]);
 
 const headers = [
-	{ title: '名称', key: 'name', minWidth: '140px' },
-	{ title: '描述', key: 'description', minWidth: '160px', sortable: false },
+	{ title: '名称', key: 'name', minWidth: '120px' },
+	{ title: '描述', key: 'description', minWidth: '150px', sortable: false },
 	{
 		title: '优化提示词',
 		key: 'optimizationPrompt',
-		minWidth: '240px',
+		minWidth: '200px',
 		sortable: false,
 	},
-	{ title: '优先级', key: 'priority', width: '90px' },
-	{ title: '顺序', key: 'displayOrder', width: '90px' },
-	{ title: '状态', key: 'enabled', width: '100px', sortable: false },
-	{ title: '操作', key: 'actions', width: '170px', sortable: false },
+	{ title: '优先级', key: 'priority', width: '80px' },
+	{ title: '顺序', key: 'displayOrder', width: '80px' },
+	{ title: '状态', key: 'enabled', width: '90px', sortable: false },
+	{ title: '操作', key: 'actions', width: '140px', sortable: false },
 ];
 
 const promptTypeOptions = [
