@@ -271,8 +271,10 @@ npm run lint
 npm run build
 ```
 
-最近一次本机回归（2026-10-21）：后端 H2 **1962/1962**，MySQL IT **23/23**，Vitest **94/94**，
-TypeScript、ESLint、Build 通过。测试数量是回归证据，不等同于业务效果或代码质量。
+最终验收轮本机回归（2026-10-21）：后端 H2 **1963/1963**，Vitest **96/96**，
+TypeScript、ESLint、Build 通过；真实浏览器完整写链路 **18/18**、全站路由 **17/17**、可见交互巡检 **35/35**，
+控制台 0 错误、网络 0 个 4xx/5xx。MySQL IT **23/23** 为上一阶段结果，本轮未重跑
+（本轮无 schema/DDL 变更，且未启动隔离 MySQL）。测试数量是回归证据，不等同于业务效果或代码质量。
 
 CI：新增 [`.github/workflows/chainpilot-ci.yml`](.github/workflows/chainpilot-ci.yml)，覆盖 JDK 17
 后端 H2 测试和 Node 22 前端的 Vitest、TS、Lint、Build；默认不启动 MySQL、不调用真实模型。

@@ -6,9 +6,10 @@
 - 本地 `origin`：`https://github.com/spring-ai-alibaba/DataAgent.git`
 - 上游许可证：Apache License 2.0，仓库根目录保留完整 [LICENSE](../LICENSE)。
 - 未发现独立的 `NOTICE` 文件；本次不伪造或补写不存在的上游版权声明。
-- 本地 Git 历史只有一个导入提交：
-  `c182790 chore: import DataAgent source snapshot`。
-  因此无法通过本地 Git 逐行还原每条历史提交的作者或上游 PR 关系。
+- 本地 Git 历史从导入提交开始：
+  `c182790 chore: import DataAgent source snapshot`，
+  ChainPilot 交付提交为 `a18481c feat: deliver ChainPilot supply chain decision workbench`。
+  因此无法通过本地 Git 逐行还原上游每条历史提交的作者或 PR 关系。
 
 > 本文按实际文件、包结构、调用关系和当前工作区差异做归因；不把“出现在仓库中”
 > 自动等同于“由 ChainPilot 从零原创”。
