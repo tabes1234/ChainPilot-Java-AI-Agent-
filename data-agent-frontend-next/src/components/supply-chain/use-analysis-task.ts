@@ -22,40 +22,53 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 	const [error, setError] = useState<string | null>(null);
 	const [submitting, setSubmitting] = useState(false);
 	const timerRef = useRef<number | null>(null);
+	const requestRef = useRef<AbortController | null>(null);
 	const mountedRef = useRef(true);
-
-	useEffect(() => {
-		mountedRef.current = true;
-		return () => {
-			mountedRef.current = false;
-			if (timerRef.current) window.clearTimeout(timerRef.current);
-		};
-	}, []);
+	const isAbort = (error: unknown) => isApiError(error) && error.status === 0 && error.message === '请求已取消';
 
 	const stopPolling = () => {
 		if (timerRef.current) {
 			window.clearTimeout(timerRef.current);
 			timerRef.current = null;
 		}
+		requestRef.current?.abort();
+		requestRef.current = null;
+	};
+
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+			stopPolling();
+		};
+	}, []);
+
+	const beginRequest = () => {
+		requestRef.current?.abort();
+		const controller = new AbortController();
+		requestRef.current = controller;
+		return controller;
 	};
 
 	const poll = async (id: string) => {
+		const controller = beginRequest();
 		try {
-			const status = await fetchTask(id);
-			if (!mountedRef.current) return;
+			const status = await fetchTask(id, { signal: controller.signal });
+			if (!mountedRef.current || controller.signal.aborted) return;
 			setTask(status);
 			setError(status.error ?? null);
 			try {
-				const taskEvents = await fetchTaskEvents(id);
-				if (mountedRef.current) setEvents(taskEvents);
-			} catch {
+				const taskEvents = await fetchTaskEvents(id, { signal: controller.signal });
+				if (mountedRef.current && !controller.signal.aborted) setEvents(taskEvents);
+			} catch (eventsError) {
+				if (isAbort(eventsError)) return;
 				/* events are optional for the status display */
 			}
 			if (status.status === 'ACCEPTED' || status.status === 'RUNNING') {
 				timerRef.current = window.setTimeout(() => void poll(id), POLL_MS);
 			}
 		} catch (pollError) {
-			if (!mountedRef.current) return;
+			if (!mountedRef.current || isAbort(pollError)) return;
 			setError(friendlyErrorMessage(pollError, '查询任务状态失败', {
 				404: '任务不存在或已被清理，请从任务记录重新打开。',
 			}));
@@ -71,21 +84,22 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 	useEffect(() => {
 		if (!initialTaskId) return;
 		stopPolling();
+		const controller = beginRequest();
 		void (async () => {
 			try {
-				const status = await fetchTask(initialTaskId);
-				if (!mountedRef.current) return;
+				const status = await fetchTask(initialTaskId, { signal: controller.signal });
+				if (!mountedRef.current || controller.signal.aborted) return;
 				setTaskId(initialTaskId);
 				setTask(status);
 				setError(status.error ?? null);
 				if (status.status === 'ACCEPTED' || status.status === 'RUNNING') {
 					void poll(initialTaskId);
 				} else {
-					const taskEvents = await fetchTaskEvents(initialTaskId).catch(() => []);
-					if (mountedRef.current) setEvents(taskEvents);
+					const taskEvents = await fetchTaskEvents(initialTaskId, { signal: controller.signal }).catch(() => []);
+					if (mountedRef.current && !controller.signal.aborted) setEvents(taskEvents);
 				}
 			} catch (loadError) {
-				if (mountedRef.current) {
+				if (mountedRef.current && !isAbort(loadError)) {
 					setError(friendlyErrorMessage(loadError, '加载任务失败', {
 						404: '任务不存在或已被清理，请从任务记录重新打开。',
 					}));

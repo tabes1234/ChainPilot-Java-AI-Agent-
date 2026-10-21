@@ -22,6 +22,7 @@ import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskSummary;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -32,9 +33,11 @@ import java.sql.ResultSet;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 /** Persists demo analysis jobs and reports in the application's configured SQL database. */
 @Repository
@@ -244,18 +247,75 @@ public class SupplyChainTaskRepository {
         }
     }
 
-    /** Retention applies only to terminal records; active jobs are never pruned. */
+    /**
+     * Retention applies only to terminal records; active jobs are never pruned. Tasks referenced by
+     * durable business records are kept so plans, proposals, feedback and evaluation results do not
+     * retain dangling task IDs.
+     */
     public void prune(Duration retention, int maxRetained) {
+        Set<String> referenced = referencedTaskIds();
         long cutoff = Instant.now().minus(retention).toEpochMilli();
-        jdbc.update("DELETE FROM " + TABLE + " WHERE status IN ('COMPLETED','FAILED') AND updated_at < ?", cutoff);
+        List<String> expired = jdbc.query("SELECT task_id FROM " + TABLE
+                        + " WHERE status IN ('COMPLETED','FAILED') AND updated_at < ?",
+                (rs, row) -> rs.getString(1), cutoff);
+        expired.stream()
+            .filter(id -> !referenced.contains(id))
+            .forEach(id -> deleteTerminalTask(id));
         Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM " + TABLE, Integer.class);
         int excess = Math.max(0, (count == null ? 0 : count) - maxRetained);
         if (excess > 0) {
             List<String> terminalIds = jdbc.query("SELECT task_id FROM " + TABLE
                             + " WHERE status IN ('COMPLETED','FAILED') ORDER BY updated_at ASC",
                     (rs, row) -> rs.getString(1));
-            terminalIds.stream().limit(excess).forEach(id -> jdbc.update("DELETE FROM " + TABLE
-                    + " WHERE task_id=? AND status IN ('COMPLETED','FAILED')", id));
+            terminalIds.stream()
+                .filter(id -> !referenced.contains(id))
+                .limit(excess)
+                .forEach(id -> deleteTerminalTask(id));
+        }
+    }
+
+    private void deleteTerminalTask(String taskId) {
+        jdbc.update("DELETE FROM " + TABLE + " WHERE task_id=? AND status IN ('COMPLETED','FAILED')", taskId);
+        if (tableExists("chainpilot_task_event")) {
+            jdbc.update("DELETE FROM chainpilot_task_event WHERE task_id=?", taskId);
+        }
+    }
+
+    private Set<String> referencedTaskIds() {
+        Set<String> referenced = new HashSet<>();
+        for (String table : List.of("chainpilot_disposal_plan", "chainpilot_action_proposal",
+                "chainpilot_feedback", "chainpilot_feedback_case", "chainpilot_evaluation_case_result")) {
+            if (!tableExists(table)) {
+                continue;
+            }
+            try {
+                referenced.addAll(jdbc.query("SELECT task_id FROM " + table + " WHERE task_id IS NOT NULL",
+                        (rs, row) -> rs.getString(1)));
+            }
+            catch (DataAccessException ignored) {
+                // A partially initialized database should not block task retention cleanup.
+            }
+        }
+        return referenced;
+    }
+
+    private boolean tableExists(String table) {
+        try {
+            return Boolean.TRUE.equals(jdbc.execute((ConnectionCallback<Boolean>) connection -> {
+                DatabaseMetaData metadata = connection.getMetaData();
+                for (String name : List.of(table, table.toUpperCase(Locale.ROOT))) {
+                    try (ResultSet tables = metadata.getTables(connection.getCatalog(), null, name,
+                            new String[] { "TABLE" })) {
+                        if (tables.next()) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }));
+        }
+        catch (DataAccessException exception) {
+            return false;
         }
     }
 }

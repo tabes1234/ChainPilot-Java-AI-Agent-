@@ -79,18 +79,25 @@ describe('useAnalysisTask polling lifecycle', () => {
 		expect(fetchTask).toHaveBeenCalledTimes(3);
 	});
 
-	it('clears the pending timer and stops requests after unmount', async () => {
-		vi.mocked(fetchTask).mockResolvedValue({
-			taskId: 'task-3', status: 'RUNNING', currentStep: 'QUERYING_ORDERS',
-			validationAttempts: 0, error: null, updatedAt: '2026-10-21T00:00:00Z',
+	it('clears the pending timer, aborts the active request and stops after unmount', async () => {
+		const signals: Array<AbortSignal | undefined> = [];
+		vi.mocked(fetchTask).mockImplementation(async (_id, options) => {
+			signals.push(options?.signal);
+			return {
+				taskId: 'task-3', status: 'RUNNING', currentStep: 'QUERYING_ORDERS',
+				validationAttempts: 0, error: null, updatedAt: '2026-10-21T00:00:00Z',
+			};
 		});
 
 		await render('task-3');
 		const callsBeforeUnmount = vi.mocked(fetchTask).mock.calls.length;
 		expect(callsBeforeUnmount).toBeGreaterThan(0);
+		const activeSignal = signals.at(-1);
+		expect(activeSignal?.aborted).toBe(false);
 		act(() => root?.unmount());
 		root = null;
 
+		expect(activeSignal?.aborted).toBe(true);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(10_000);
 		});

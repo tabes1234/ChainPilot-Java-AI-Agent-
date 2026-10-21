@@ -550,12 +550,12 @@ export async function fetchTasks(params: {
 	return { items, page, pageSize, total, totalPages };
 }
 
-export async function fetchTask(taskId: string): Promise<TaskStatus> {
-	return api.get<TaskStatus>(`/api/supply-chain/analysis/tasks/${encodeURIComponent(taskId)}`);
+export async function fetchTask(taskId: string, options?: { signal?: AbortSignal }): Promise<TaskStatus> {
+	return api.get<TaskStatus>(`/api/supply-chain/analysis/tasks/${encodeURIComponent(taskId)}`, options);
 }
 
-export async function fetchTaskEvents(taskId: string): Promise<TaskEvent[]> {
-	return api.get<TaskEvent[]>(`/api/supply-chain/analysis/tasks/${encodeURIComponent(taskId)}/events`);
+export async function fetchTaskEvents(taskId: string, options?: { signal?: AbortSignal }): Promise<TaskEvent[]> {
+	return api.get<TaskEvent[]>(`/api/supply-chain/analysis/tasks/${encodeURIComponent(taskId)}/events`, options);
 }
 
 export async function fetchReport(taskId: string): Promise<RiskAnalysisReport> {

@@ -73,6 +73,32 @@ class SupplyChainTaskRepositoryTest {
         assertFalse(repository.findTask("done-task").isPresent());
     }
 
+    @Test
+    void retentionKeepsTasksReferencedByDurableBusinessRecords() {
+        JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
+                "jdbc:h2:mem:chainpilot-referenced-retention;DB_CLOSE_DELAY=-1", "sa", ""));
+        jdbc.execute("CREATE TABLE chainpilot_disposal_plan (task_id VARCHAR(36))");
+        jdbc.execute("CREATE TABLE chainpilot_feedback (task_id VARCHAR(36))");
+        jdbc.execute("CREATE TABLE chainpilot_task_event (task_id VARCHAR(36))");
+        SupplyChainTaskRepository repository = new SupplyChainTaskRepository(jdbc,
+                new ObjectMapper().findAndRegisterModules());
+        Instant old = Instant.now().minus(Duration.ofDays(2));
+        for (String id : List.of("plan-task", "feedback-task", "free-task")) {
+            repository.create(new SupplyChainTaskStatus(id, "ACCEPTED", "QUEUED", 0, null, old), id);
+            repository.update(new SupplyChainTaskStatus(id, "COMPLETED", "DONE", 0, null, old));
+        }
+        jdbc.update("INSERT INTO chainpilot_disposal_plan (task_id) VALUES (?)", "plan-task");
+        jdbc.update("INSERT INTO chainpilot_feedback (task_id) VALUES (?)", "feedback-task");
+        jdbc.update("INSERT INTO chainpilot_task_event (task_id) VALUES (?)", "free-task");
+
+        repository.prune(Duration.ofHours(24), 1_000);
+
+        assertTrue(repository.findTask("plan-task").isPresent());
+        assertTrue(repository.findTask("feedback-task").isPresent());
+        assertFalse(repository.findTask("free-task").isPresent());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM chainpilot_task_event", Integer.class));
+    }
+
 	@Test
 	void restartMarksInterruptedWorkAsFailedWithoutDeletingIt() {
 		JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
