@@ -3,6 +3,7 @@ import { api, assertSuccess, errorMessage, friendlyErrorMessage, unwrap } from '
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
 describe('envelope helpers', () => {
@@ -124,5 +125,23 @@ describe('api client', () => {
 			status: 0,
 			message: '网络错误，请检查后端服务是否可用',
 		});
+	});
+
+	it('distinguishes request timeouts from caller cancellation', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+			init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+		})));
+
+		const timedOut = api.get('/api/slow', { timeoutMs: 1000 });
+		const timeoutAssertion = expect(timedOut).rejects.toMatchObject({ status: 0, message: '请求超时（1 秒）' });
+		await vi.advanceTimersByTimeAsync(1000);
+		await timeoutAssertion;
+
+		const controller = new AbortController();
+		const cancelled = api.get('/api/cancel', { timeoutMs: 5000, signal: controller.signal });
+		const cancelAssertion = expect(cancelled).rejects.toMatchObject({ status: 0, message: '请求已取消' });
+		controller.abort();
+		await cancelAssertion;
 	});
 });

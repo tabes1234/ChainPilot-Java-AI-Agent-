@@ -53,7 +53,7 @@ JdbcTemplate/MyBatis、H2/MySQL、Next.js 16、React 19、TanStack Query、JUnit
 
 - 后端 H2：**1963/1963**。
 - 隔离 MySQL 8 IT：**23/23**（上一阶段结果；本轮无 schema 变更，未重跑）。
-- 前端 Vitest：**109/109**；TypeScript、ESLint、Next build 通过。
+- 前端 Vitest：**110/110**；TypeScript、ESLint、Next build 通过。
 - 真实浏览器：完整写链路 **18/18**、全站路由 **17/17**、可见交互 **35/35**，0 控制台错误、0 个 HTTP 4xx/5xx。
 - 假模型集成测试覆盖真实 HTTP 工具调用、模型事件和 provider usage；不代表真实供应商 E2E。
 - 这些数字只用于说明回归范围，不等同于代码质量、业务效果或生产性能。
