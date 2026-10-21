@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { errorMessage } from '@/lib/api/client';
+import { errorMessage, friendlyErrorMessage } from '@/lib/api/client';
 import { fetchDecision, fetchTasks } from '@/lib/api/supplyChain';
 import { DecisionView } from '@/components/supply-chain/decision-view';
 import { DemoBanner } from '@/components/supply-chain/demo-banner';
@@ -144,7 +144,14 @@ export default function DecisionWorkspaceView() {
 
 			{decisionQuery.isPending && taskRunner.task?.status === 'COMPLETED' && <LoadingState label="加载决策结果…" />}
 			{decisionQuery.isError && (
-				<ErrorState title="决策结果不可用" message={errorMessage(decisionQuery.error, '该任务没有决策结果')} onRetry={() => decisionQuery.refetch()} />
+				<ErrorState
+					title="决策结果不可用"
+					message={friendlyErrorMessage(decisionQuery.error, '该任务没有决策结果', {
+						404: '该任务不存在或已被清理，请从任务记录重新选择。',
+						409: '该任务属于风险分析模式，请到供应链分析页查看报告。',
+					})}
+					onRetry={() => decisionQuery.refetch()}
+				/>
 			)}
 			{decisionQuery.data && <DecisionView decision={decisionQuery.data} onChanged={() => decisionQuery.refetch()} />}
 

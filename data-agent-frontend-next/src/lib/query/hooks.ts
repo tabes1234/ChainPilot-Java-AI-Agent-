@@ -358,6 +358,7 @@ export function useEvaluationRun(runId: string | null) {
 		queryKey: ['evaluation', 'run', runId],
 		queryFn: () => evaluationApi.fetchEvaluationRun(runId!),
 		enabled: runId !== null,
+		retry: false,
 		refetchInterval: (query) => {
 			const data = query.state.data as { status?: string } | undefined;
 			return data?.status === 'RUNNING' ? 2000 : false;

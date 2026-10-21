@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
-import { errorMessage } from '@/lib/api/client';
+import { errorMessage, friendlyErrorMessage } from '@/lib/api/client';
 import { fetchOrders, fetchSuppliers, fetchInventory, fetchReport, fetchTasks, type InventoryItem, type RiskLevel } from '@/lib/api/supplyChain';
 import { ReportView } from '@/components/supply-chain/report-view';
 import { DemoBanner } from '@/components/supply-chain/demo-banner';
@@ -185,7 +185,10 @@ export default function AnalysisView() {
 			{reportQuery.isError && (
 				<ErrorState
 					title="报告不可用"
-					message={errorMessage(reportQuery.error, '该任务没有可用报告')}
+					message={friendlyErrorMessage(reportQuery.error, '该任务没有可用报告', {
+						404: '该任务不存在或已被清理，请从任务记录重新选择。',
+						409: '该任务属于决策模式，请到自然语言决策页查看结果。',
+					})}
 					onRetry={() => reportQuery.refetch()}
 				/>
 			)}

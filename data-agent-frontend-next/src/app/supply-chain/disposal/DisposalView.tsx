@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { errorMessage } from '@/lib/api/client';
+import { errorMessage, friendlyErrorMessage } from '@/lib/api/client';
 import {
 	createComparison,
 	createExecution,
@@ -131,17 +131,19 @@ export default function DisposalView() {
 		queryKey: ['disposalPlan', detailPlanId],
 		queryFn: () => fetchPlan(detailPlanId!),
 		enabled: detailPlanId !== null,
+		retry: false,
 	});
 	const eligibilityQuery = useQuery({
 		queryKey: ['executionEligibility', detailPlanId],
 		queryFn: () => fetchEligibility(detailPlanId!),
-		enabled: detailPlanId !== null,
+		enabled: detailPlanId !== null && planQuery.isSuccess,
 		retry: false,
 	});
 	const executionsQuery = useQuery({
 		queryKey: ['disposalExecutions', detailPlanId],
 		queryFn: () => fetchExecutions(detailPlanId!, { page: 1, pageSize: 10 }),
-		enabled: detailPlanId !== null,
+		enabled: detailPlanId !== null && planQuery.isSuccess,
+		retry: false,
 	});
 	const [detailExecution, setDetailExecution] = useState<SandboxExecution | null>(null);
 	const [executionBusy, setExecutionBusy] = useState(false);
@@ -153,6 +155,7 @@ export default function DisposalView() {
 	const [comparisonSupplier, setComparisonSupplier] = useState('');
 	const [comparison, setComparison] = useState<ScenarioComparison | null>(null);
 	const [comparisonBusy, setComparisonBusy] = useState(false);
+	const [candidateSaveBusy, setCandidateSaveBusy] = useState(false);
 	const comparisonsQuery = useQuery({
 		queryKey: ['disposalComparisons'],
 		queryFn: () => fetchComparisons({ page: 1, pageSize: 5 }),
@@ -277,6 +280,14 @@ export default function DisposalView() {
 			toast.warning('请输入对比标题');
 			return;
 		}
+		if (comparisonScenario === 'INVENTORY_REPLENISHMENT' && !comparisonSku.trim()) {
+			toast.warning('请输入 SKU');
+			return;
+		}
+		if (comparisonScenario === 'SUPPLIER_DELAY' && !comparisonSupplier.trim()) {
+			toast.warning('请输入供应商 ID');
+			return;
+		}
 		const validCandidates = candidates.filter((candidate) => candidate.value.trim() !== '');
 		if (validCandidates.length < 2) {
 			toast.warning('至少需要两个候选参数');
@@ -308,6 +319,8 @@ export default function DisposalView() {
 	};
 
 	const saveCandidateAsPlan = async (comparisonId: string, candidateId: string, label: string) => {
+		if (candidateSaveBusy) return;
+		setCandidateSaveBusy(true);
 		try {
 			const plan = await createPlanFromCandidate(comparisonId, candidateId, {
 				title: `${comparisonTitle || '方案对比'} · ${label}`,
@@ -323,6 +336,8 @@ export default function DisposalView() {
 			}
 		} catch (error) {
 			toast.error('保存失败', { description: errorMessage(error) });
+		} finally {
+			setCandidateSaveBusy(false);
 		}
 	};
 
@@ -554,7 +569,12 @@ export default function DisposalView() {
 					{planQuery.isPending ? (
 						<LoadingState compact label="加载方案详情…" />
 					) : planQuery.isError ? (
-						<ErrorState message={errorMessage(planQuery.error, '加载方案详情失败')} onRetry={() => planQuery.refetch()} />
+						<ErrorState
+							message={friendlyErrorMessage(planQuery.error, '加载方案详情失败', {
+								404: '方案不存在或已被清理，请从处置方案列表重新选择。',
+							})}
+							onRetry={() => planQuery.refetch()}
+						/>
 					) : plan ? (
 						<PlanDetail
 							key={plan.planId}
@@ -592,9 +612,9 @@ export default function DisposalView() {
 							</SelectContent>
 						</Select>
 						{comparisonScenario === 'INVENTORY_REPLENISHMENT' ? (
-							<Input value={comparisonSku} onChange={(event) => setComparisonSku(event.target.value)} placeholder="SKU（可选）" />
+							<Input value={comparisonSku} onChange={(event) => setComparisonSku(event.target.value)} placeholder="SKU（必填）" />
 						) : (
-							<Input value={comparisonSupplier} onChange={(event) => setComparisonSupplier(event.target.value)} placeholder="供应商 ID（可选）" />
+							<Input value={comparisonSupplier} onChange={(event) => setComparisonSupplier(event.target.value)} placeholder="供应商 ID（必填）" />
 						)}
 						<div className="space-y-2">
 							{candidates.map((candidate, index) => (
@@ -625,7 +645,7 @@ export default function DisposalView() {
 					</div>
 					<div className="min-w-0">
 						{comparison ? (
-							<ComparisonResult comparison={comparison} onSavePlan={saveCandidateAsPlan} />
+							<ComparisonResult comparison={comparison} onSavePlan={saveCandidateAsPlan} savingPlan={candidateSaveBusy} />
 						) : (
 							<p className="text-sm text-[#5a708c]">运行或选择一次对比后显示排名结果。</p>
 						)}
@@ -930,9 +950,11 @@ function ExecutionSteps({ execution }: { execution: SandboxExecution }) {
 function ComparisonResult({
 	comparison,
 	onSavePlan,
+	savingPlan,
 }: {
 	comparison: ScenarioComparison;
 	onSavePlan: (comparisonId: string, candidateId: string, label: string) => void;
+	savingPlan: boolean;
 }) {
 	const sampleSimulation = comparison.candidates.find((candidate) => candidate.simulation)?.simulation;
 	const ruleVersion = sampleSimulation?.ruleVersion ?? 'RISK_RULES_V1';
@@ -989,10 +1011,10 @@ function ComparisonResult({
 										<Button
 											size="sm"
 											variant="outline"
-											disabled={Boolean(candidate?.linkedPlanId)}
+											disabled={savingPlan || Boolean(candidate?.linkedPlanId)}
 											onClick={() => onSavePlan(comparison.comparisonId, ranking.candidateId, ranking.label ?? ranking.candidateId)}
 										>
-											保存为方案
+											{savingPlan ? '保存中…' : '保存为方案'}
 										</Button>
 									</td>
 								</tr>

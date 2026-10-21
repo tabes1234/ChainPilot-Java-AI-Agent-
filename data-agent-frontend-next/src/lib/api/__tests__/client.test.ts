@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, assertSuccess, errorMessage, unwrap } from '@/lib/api/client';
+import { api, assertSuccess, errorMessage, friendlyErrorMessage, unwrap } from '@/lib/api/client';
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -23,6 +23,14 @@ describe('envelope helpers', () => {
 		expect(errorMessage({ status: 500, message: 'HTTP 500', detail: '服务器内部错误' })).toBe('HTTP 500：服务器内部错误');
 		expect(errorMessage(new Error('boom'))).toBe('boom');
 		expect(errorMessage(undefined, '兜底')).toBe('兜底');
+	});
+
+	it('replaces status-level failures with friendly copy while keeping business messages', () => {
+		const notFound = { status: 404, message: 'Unknown disposal plan: missing-plan' };
+		expect(friendlyErrorMessage(notFound, '加载方案详情失败', { 404: '方案不存在或已被清理' })).toBe('方案不存在或已被清理');
+		expect(friendlyErrorMessage({ ...notFound, status: 400 }, '加载方案详情失败', { 404: '方案不存在或已被清理' }))
+			.toBe('Unknown disposal plan: missing-plan');
+		expect(friendlyErrorMessage(undefined, '加载失败')).toBe('加载失败');
 	});
 });
 

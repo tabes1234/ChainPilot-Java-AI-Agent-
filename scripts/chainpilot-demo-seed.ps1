@@ -169,13 +169,18 @@ else {
 }
 
 if ($plan.status -ne "SELECTED") {
-    $recommendationId = @($plan.recommendations)[0].recommendationId
+    $recommendations = @($plan.recommendations)
+    $recommendation = $recommendations | Where-Object {
+        $_.actionType -eq "REPLENISH_INVENTORY" -and $_.sku -eq "SKU-MCU-001"
+    } | Select-Object -First 1
+    if (-not $recommendation) { $recommendation = $recommendations | Select-Object -First 1 }
+    $recommendationId = $recommendation.recommendationId
     if (-not $recommendationId) { throw "方案没有可用建议，无法选中" }
     $plan = Invoke-Api -Method PATCH -Path "/api/supply-chain/disposal-plans/$($plan.planId)/status" -Body @{
         status = "SELECTED"
         selectedRecommendationId = $recommendationId
     }
-    Write-Host "  已选用方案"
+    Write-Host "  已选用方案（$($recommendation.actionType)）"
 }
 
 $executions = Invoke-Api -Method GET -Path "/api/supply-chain/disposal-plans/$($plan.planId)/executions?page=1&pageSize=10"

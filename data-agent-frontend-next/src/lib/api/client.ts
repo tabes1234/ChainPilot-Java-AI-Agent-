@@ -38,6 +38,19 @@ export function errorMessage(error: unknown, fallback = '请求失败，请稍�
 	return fallback;
 }
 
+/** Keeps backend business messages, but replaces status-level errors with page-specific copy. */
+export function friendlyErrorMessage(
+	error: unknown,
+	fallback: string,
+	statusMessages: Partial<Record<number, string>> = {},
+): string {
+	if (isApiError(error)) {
+		const message = statusMessages[error.status];
+		if (message) return message;
+	}
+	return errorMessage(error, fallback);
+}
+
 type RequestOptions = RequestInit & { timeoutMs?: number };
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {

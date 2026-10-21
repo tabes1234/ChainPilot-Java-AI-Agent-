@@ -10,7 +10,7 @@ import {
 	type TaskStatus,
 	type TaskSummary,
 } from '@/lib/api/supplyChain';
-import { errorMessage } from '@/lib/api/client';
+import { errorMessage, friendlyErrorMessage, isApiError } from '@/lib/api/client';
 
 const POLL_MS = 900;
 
@@ -56,7 +56,13 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 			}
 		} catch (pollError) {
 			if (!mountedRef.current) return;
-			setError(errorMessage(pollError, '查询任务状态失败'));
+			setError(friendlyErrorMessage(pollError, '查询任务状态失败', {
+				404: '任务不存在或已被清理，请从任务记录重新打开。',
+			}));
+			if (isApiError(pollError) && pollError.status === 404) {
+				stopPolling();
+				return;
+			}
 			timerRef.current = window.setTimeout(() => void poll(id), POLL_MS * 2);
 		}
 	};
@@ -79,7 +85,11 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 					if (mountedRef.current) setEvents(taskEvents);
 				}
 			} catch (loadError) {
-				if (mountedRef.current) setError(errorMessage(loadError, '加载任务失败'));
+				if (mountedRef.current) {
+					setError(friendlyErrorMessage(loadError, '加载任务失败', {
+						404: '任务不存在或已被清理，请从任务记录重新打开。',
+					}));
+				}
 			}
 		})();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
