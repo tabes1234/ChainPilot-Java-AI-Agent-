@@ -181,6 +181,43 @@ npm run start -- -p 3002
 CHAINPILOT_BACKEND_URL=http://127.0.0.1:8066 npm run dev
 ```
 
+## 访问与使用（无需登录）
+
+ChainPilot 当前**没有注册/登录体系**：启动前后端后直接访问即可，无账号、无权限门槛，
+所有数据（任务、评测、反馈）按本地数据库归属，不做多用户隔离。
+
+核心业务流程（一条完整链路）：
+
+1. 打开首页 `/`，点击「项目演示」进入 `/demo` 演示中心。
+2. 在 `/supply-chain` 提交一个分析问题（如「哪些订单存在延期风险？」），等待任务完成。
+3. 打开任务报告，查看风险评分、证据明细与数据缺口（评分由 Java 确定性规则计算）。
+4. 进入 `/supply-chain/decision` 对报告生成决策提案，比较候选方案并人工确认。
+5. 在 `/supply-chain/disposal` 对已确认方案做情景模拟或沙箱演练（不写真实业务数据）。
+6. 在 `/supply-chain/history` 与 `/agent-observability` 回溯任务事件与诊断。
+
+第三方 AI 模型为可选增强：不配置模型时分析、评分与离线评测全部可用（见上文
+「模型配置与真实 Agent 前置条件」）；配置 CHAT 模型并通过连接测试后，AGENT 工作流
+评测与模型解释叙述才会解锁。
+
+## Docker 启动（可选）
+
+仓库提供三种镜像与一份自托管编排（构建上下文均为仓库根目录）：
+
+```bash
+# 仅后端（默认 H2 文件库，数据在容器 /app/data）
+docker build -f deploy/Dockerfile.backend -t chainpilot-backend .
+
+# 仅前端（构建参数注入后端地址）
+docker build -f deploy/Dockerfile.frontend --build-arg CHAINPILOT_BACKEND_URL=http://backend:8065 -t chainpilot-frontend .
+
+# 自托管全家桶：MySQL 8 + 后端 + 前端，仅暴露前端 3000 端口
+# 需要先在 deploy/.env 写入 MYSQL_ROOT_PASSWORD（该文件不得提交）
+docker compose -f deploy/docker-compose.public.yml --env-file deploy/.env up -d --build
+```
+
+说明：镜像构建与 compose 编排脚本随项目交付，但**本轮验收未实际执行 Docker 构建/启动**，
+运行结果以本机 Maven + npm 方式为准；生产环境建议在前端前再加 HTTPS 反向代理。
+
 ## 本地只读 Smoke Test
 
 启动前后端后运行：
@@ -235,7 +272,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\chainpilot-demo-se
 成功/失败/已取消任务的重复取消只返回当前终态，不会覆盖。执行流程在节点、工具和持久化前检查取消信号；
 无法物理中止的在途模型请求返回后也不会被写成成功结果。多实例下执行实例在节点和工具边界按主键读取任务状态，
 不依赖内存广播；取消状态与 `TASK_CANCELLED` 事件在同一数据库事务中写入，事件失败会回滚取消状态。
-实际传播延迟为下一个检查点，内存信号只降低同实例的发现延迟。演示当天可重跑脚本；已有 `[DEMO-SEED]` 任务仍存在时会直接复用，不会重复写入。
+事件序号在任务内通过锁定读分配并在唯一约束冲突时重试，避免多实例并发追加造成序号冲突。
+事件追加先锁定任务行再分配序号，避免同一任务的多事务并发在事件索引上互相死锁。
+取消导致的模型调用中断按取消传播，不记录为模型失败；跨实例无法物理中止的在途模型仍可能在
+`TASK_CANCELLED` 之后返回，这些真实发生过的调用与降级会以原事件类型保留审计，但状态被标记为
+`CANCELLED` 并在摘要中写明「late response ignored」，因此时间线不会把迟到的响应读成已生效的结果，
+也不会产生成功业务结果。
+实际传播延迟为下一个检查点，进程内信号只降低同一实例的发现延迟。
+多实例部署前提：所有权不在 JVM 里，而在共享数据库里——任务用
+`chainpilot_analysis_task.owner_instance_id / lease_expires_at / fence_version`，AGENT 评测用
+`chainpilot_evaluation_lock` 的一行锁。因此横向扩容要求：① 所有实例连接同一个业务数据库，且该数据库的
+事务与条件更新语义有效（隔离测试实测于 MySQL 8.0.43 / InnoDB）；② 每个实例的 `chainpilot.instance-id`
+唯一，未显式配置时启动生成随机 UUID；③ Spring 调度保持启用，续约与过期回收都由 `@Scheduled` 驱动，
+关闭调度即无人续约也无人回收；④ 租约一律与数据库时钟（`SELECT CURRENT_TIMESTAMP`）比较，
+实例之间的时钟偏差不影响判定，但 MySQL 的 `CURRENT_TIMESTAMP` 只有秒精度。
+仍在支持范围之外的是同一 JVM 内多数据源/多 Spring 上下文：持久取消检查器与租约管理器都是进程级单例，
+一个进程只对应一个业务数据源。单实例本地演示（H2 文件库）不受影响，此时所有权与租约只是退化为单持有者。
+
+多实例能力边界（只列有证据的部分）：
+- 已在隔离 MySQL 上用两个真实 Spring Boot 进程实测：任务租约互斥与续约、跨实例取消、
+  持有者被强杀后按租约到期回收为 `FAILED / LEASE_EXPIRED` 且不重放 Graph、评测运行互斥（第二实例返回 409
+  且不提交第二个真实运行）、非持有者轮询只读、终态同事务释放锁、旧 fence 的写入被数据库拒绝；
+- 未验证：生产默认租约参数（任务 TTL 15 分钟、评测 TTL 10 分钟、续约/回收 30 秒）下的长时运行与故障恢复
+  （上述实测使用的是缩短的测试参数）、真实模型 Agent E2E、备份与恢复演练、HA/主从、TLS、最小权限账号、
+  多实例压测与运维监控。多实例不等于已完成生产级 HA 验收。
+情景对比记录是独立的持久化分析对象，以 `comparison_id` 管理，不绑定 `task_id`；取消任务不删除已提交的
+对比记录，也不会将其展示或持久化为任务成功结果。对比记录可继续在处置工作台查看并用于创建方案；
+如未来需要按任务追溯来源，需产品确认后新增审计元数据，当前不采用破坏性删除。演示当天可重跑脚本；已有 `[DEMO-SEED]` 任务仍存在时会直接复用，不会重复写入。
 
 ## 模型配置与真实 Agent 前置条件
 
@@ -255,16 +318,18 @@ provider usage 或 `MODEL_VERIFIED` 运行证据；不能把假模型测试或�
 
 ## 演示路径
 
-完整的 3–5 分钟演示脚本见 [docs/DEMO_WALKTHROUGH.md](docs/DEMO_WALKTHROUGH.md)。
+比赛演示的唯一操作文档见 [docs/DEMO_WALKTHROUGH.md](docs/DEMO_WALKTHROUGH.md)（启动、数据准备、
+逐步操作与预期结果、故障恢复），功能状态清单见 [docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md)。
 
 1. 首页 `/`：项目定位、能力概览和视觉主题。
-2. 供应链分析 `/supply-chain`：提交问题，查看风险订单、证据、模型/规则来源和任务历史。
-3. 决策 `/supply-chain/decision`：生成提案、查看候选方案并人工确认。
-4. 处置与沙箱 `/supply-chain/disposal`：情景推演、方案比较、模拟隔离和沙箱资格。
-5. 历史 `/supply-chain/history`：任务、报告、事件和筛选。
-6. 评测中心 `/agent-evaluation`：案例、运行、指标、对比和人工反馈。
-7. 运行观测 `/agent-observability`：任务事件、工具/模型/回退诊断。
-8. 模型配置 `/system/model-config`：配置、连接测试和就绪状态。
+2. 演示中心 `/demo`：全部业务模块的功能卡片入口，按「完整可运行 / 部分可用 / 暂不可用」三档如实标注状态；AGENT 模式状态由后端 `/api/agent-evaluation/capabilities` 实时判定。
+3. 供应链分析 `/supply-chain`：提交问题，查看风险订单、证据、模型/规则来源和任务历史。
+4. 决策 `/supply-chain/decision`：生成提案、查看候选方案并人工确认。
+5. 处置与沙箱 `/supply-chain/disposal`：情景推演、方案比较、模拟隔离和沙箱资格。
+6. 历史 `/supply-chain/history`：任务、报告、事件和筛选。
+7. 评测中心 `/agent-evaluation`：案例、运行、指标、对比和人工反馈。
+8. 运行观测 `/agent-observability`：任务事件、工具/模型/回退诊断。
+9. 模型配置 `/system/model-config`：配置、连接测试和就绪状态。
 
 关键 API：
 
@@ -317,10 +382,32 @@ npm run lint
 npm run build
 ```
 
-最终验收轮本机回归（2026-10-21）：后端 H2 **1972/1972**，Vitest **113/113**，
-TypeScript、ESLint、Build 通过；真实浏览器完整写链路 **18/18**、全站路由 **17/17**、可见交互巡检 **35/35**，
-控制台 0 错误、网络 0 个 4xx/5xx。MySQL IT **23/23** 为上一阶段结果，本轮未重跑
-（本轮无 schema/DDL 变更，且未启动隔离 MySQL）。测试数量是回归证据，不等同于业务效果或代码质量。
+最终验收轮本机回归（2026-10-22）：后端 H2 **1978/1978**，真实 MySQL 8.0.43 IT **34/34**，
+双 JVM 跨实例取消、正常完成、完成前边界竞争和完成后迟到取消均验证通过；Vitest **113/113**，
+TypeScript、ESLint、Build 通过。最终代码真实浏览器回归：**19/19 入口**通过（17 个主路由 +
+`/agent`、`/agent/1` 重定向入口；含 `/dashboard` 别名），完整写链路 **18/18**，错误状态 **12/12**，
+重复提交/校验 **7/7**，342px 移动端 **9/9 无横向溢出**；任务生命周期 **11/11**（MySQL + 本地假模型，
+明确为 MOCK）。数据库初始化/升级/备份恢复见 [DATABASE_RELEASE.md](docs/DATABASE_RELEASE.md)。
+测试数量是回归证据，不等同于业务效果或代码质量。
+
+同日晚些的第 40 轮（真实模型验收前置修复，零付费）重新实测：后端 H2 **2015/2015**、
+0 失败 0 错误 0 跳过，`checkstyle:check` **0 violations**；本轮未运行 MySQL IT、未启动第二个 JVM、
+未调用任何真实模型，上述 34/34 与双 JVM 结论仍是此前隔离环境的实测结果。
+第 41 轮（Tool Calling 预算与状态语义，零付费）在同一隔离条件下独占重跑：后端 H2 **2025/2025**、
+0 失败 0 错误 0 跳过，Checkstyle 0 violations；新增的是本地回环与 H2 测试（`RealModelToolCallBudgetTest`
+6 例、`SupplyChainBudgetAbortStateTest` 4 例），未修改生产代码，未运行 MySQL IT 与双 JVM，未调用真实模型。
+第 42 轮（修复降级假通过）独占重跑：后端 H2 **2033/2033**、0 失败 0 错误 0 跳过，Checkstyle 0 violations；
+本轮改了生产评测断言（4 个需要模型参与的 AGENT 案例新增模型参与必需断言）并补 8 条回归测试，
+未运行 MySQL IT 与双 JVM，未启用真实模型授权开关、未调用任何真实模型。
+第 43 轮（评测中心 AGENT 真实模型验收 harness）独占重跑：后端 H2 **2045/2045**、0 失败 0 错误 0 跳过，
+Checkstyle 0 violations；新增 12 条本地测试（回环彩排 11 条 + 案例选择配置 1 条），四道授权门禁以
+`-Dchainpilot.real-model.acceptance=true` 与占位配置实测：日志中被探测端点出现 0 次、占位密钥 0 次、
+未写出任何真实 Provider 证据文件。本轮未调用真实模型、未运行 MySQL IT 与双 JVM、未修改生产代码。
+第 44 轮（真实 Provider 前置安全审计，零付费）独占重跑：后端 H2 **2047/2047**、0 失败 0 错误 0 跳过，
+Checkstyle 0 violations；新增 2 条测试（数据库隔离判定 + 端点性质判定）。本轮把隔离与副作用改成**实测**：
+`@BeforeAll` 从真实连接读取 JDBC URL，非专用内存库即在任何写入前失败；并修掉三个只有真实形状才会暴露的
+缺陷（客户端 5 秒响应上限误判慢 Provider、`verificationScope` 断言写在不存在的字段上、IPv6 回环字面量
+`[::1]` 未被识别）。真实 Provider 验收仍未执行，阻塞原因是没有凭据与供应商侧费用上限确认。
 
 CI：新增 [`.github/workflows/chainpilot-ci.yml`](.github/workflows/chainpilot-ci.yml)，覆盖 JDK 17
 后端 H2 测试和 Node 22 前端的 Vitest、TS、Lint、Build；默认不启动 MySQL、不调用真实模型。
@@ -328,13 +415,79 @@ CI：新增 [`.github/workflows/chainpilot-ci.yml`](.github/workflows/chainpilot
 工作区路径下创建 `jacoco.exec` 失败的问题；执行的是同一批 JUnit 测试，不跳过测试。
 仓库原有的上游 CI 仍保留，其中多数 job 只在上游仓库运行，历史 Nuxt 前端检查也不再代表当前入口。
 
+## 比赛演示版本（功能冻结）
+
+项目已进入比赛准备阶段：**功能范围冻结，不再新增业务能力**。当前可复现的演示主流程不依赖真实模型，
+完整步骤见 [docs/DEMO_WALKTHROUGH.md](docs/DEMO_WALKTHROUGH.md)，三态功能清单见
+[docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md)。
+
+主流程一句话：在工作台用固定演示场景现场创建分析任务 → 看到 Java 确定性规则产生的风险订单、证据与
+27 条执行事件（模型未配置时如实记录 `MODEL_FAILED` + `FALLBACK_USED` 并降级为「确定性叙述」）→
+自然语言决策走确定性意图解析并调用真实 Java 工具生成候选对比 → 处置与沙箱只读展示边界 →
+离线评测（`modelCalls=0`）→ 运行观测追溯 → 模型配置页展示 AGENT 前置条件被 412 安全拒绝。
+
+2026-10-22 冻结验收（同一台 Windows 机器、H2 文件库、生产构建前端 + 系统 Chrome）：
+
+- 后端全量 H2 回归 **2047/2047**、Checkstyle **0 violations**；前端 Vitest **118/118**、`tsc` 无错误、
+  ESLint 无告警、`next build` 成功。
+- 实机走通：分析任务 `1cae5020-…`、决策任务 `98d3bf8c-…`、页面点击「全选离线案例（同版本 14）→
+  运行所选案例 → 运行离线评测」得到评测运行 `e0d2b9b5-…`（14/14 通过、`modelCalls=0`）；
+  杀掉并重启后端后任务、事件与评测运行仍完整可读。
+- 8 个关键页面 + 5 个种子数据页面：0 失败请求、0 个 HTTP≥400、0 条 console error；页面均标注叙述来源，
+  没有任何把规则结果说成模型生成的表述。
+- 只读体检脚本 `failures=0, blocked external conditions=1`；演示数据脚本幂等（`createdCount=0`）。
+
+本轮明确暂停、且不得对外宣称完成的方向：真实 Provider / 付费模型 E2E 验收（harness 与门禁已就绪，
+真实运行从未执行）、MySQL 双 JVM 与跨实例恢复的进一步验证（历史隔离环境实测，本轮未重跑）、
+新业务功能与生产级性能/架构重构。
+
+## 比赛演示模式（未开放功能入口收敛）
+
+比赛演示时可开启前端演示模式，把尚未开放的功能入口统一收敛到温和提示页 `/feature-preparing`
+（标题「这段旅程，暂时还在准备中」，文案集中维护在 `data-agent-frontend-next/src/lib/demo-mode.ts`）。
+开启方式是**构建期环境变量**（Next.js 的 `NEXT_PUBLIC_*` 在构建时内联，改开关后必须重新构建）：
+
+```bash
+# 开启演示模式构建
+NEXT_PUBLIC_CHAINPILOT_DEMO_MODE=true CHAINPILOT_BACKEND_URL=http://localhost:8065 npm run build
+npm run start -- -p 3002
+
+# 恢复完整功能：不带该变量重新构建即可
+CHAINPILOT_BACKEND_URL=http://localhost:8065 npm run build
+```
+
+开启后三层拦截同时生效：侧边栏/首页卡片/分区导航中的关闭项被真实移除；直接访问关闭路由
+（`/chat`、`/knowledge/**`、`/system/agents`、`/system/data-sources`、`/prompt-config`、`/agent/**`、
+`/dashboard`）由 `src/middleware.ts` 服务端重定向到提示页，刷新/复制链接后仍生效；
+页面内写操作按钮（提案确认、方案保存、沙箱执行、任务取消、AGENT 评测运行、模型配置增删改等）
+在触发任何请求前跳转提示页。不设置该变量时开发模式完全不受影响。关闭清单集中在
+`demo-mode.ts` 的 `DEMO_CLOSED_ROUTES`，后续恢复功能只需从该清单移除对应条目。
+
 ## 当前限制
 
 - 真实模型未配置，真实 Agent E2E 未完成；只能用假 Provider/测试替身验证边界。
+- 真实模型验收 harness 的上下文与出站请求预算已在 2026-10-22 修复并零付费验证（本地回环端点实测
+  重试放大与拦截），但没有在真实 Provider 上重跑；2026-10-20 的历史通过不能作为当前代码的验收证据。
+  评测中心的 AGENT 真实模型运行已有专用 harness（第 43 轮）：真实入口为
+  `SupplyChainRealModelAgentEvaluationIT`，默认跳过，案例资格由案例契约决定，护栏案例与降级案例无法
+  混入真实模型成功率；本地回环彩排 `RealModelAgentEvaluationHarnessTest` 已进入默认回归，但回环与
+  Mock 结果只证明 harness 逻辑，不构成真实 Provider 验收证据。
+- 真实 Provider 验收的隔离前提由运行自己证明（第 44 轮）：`@BeforeAll` 从实际打开的连接读取 JDBC URL，
+  必须是专用内存 H2 才允许写模型配置，否则在任何写入前失败且只报告数据库种类（不回显主机或路径）；
+  激活模型会把同类型其他配置置为未激活，而默认 profile 的共享 MySQL 与演示 profile 的文件库都保存
+  `model_config`，因此不允许在日常库上跑。证据标签按端点性质区分：外部端点写
+  `agent-real-model-acceptance-evidence.*`，本机/回环端点写 `agent-local-endpoint-evidence.*` 或
+  `agent-harness-loopback-evidence.*`，互不覆盖。提交评测任务还会触发 24 小时任务清理，这也是它必须
+  跑在隔离库的原因之一。
 - 供应链数据为模拟数据，不代表真实企业数据或生产性能。
 - 沙箱与情景推演不写入真实 ERP/库存；MySQL 验证覆盖隔离测试库，不代表生产 HA、TLS 或权限模型。
 - 连接测试验证状态为当前后端进程作用域，重启后需要重新测试。
 - 评测案例与反馈流程已实现离线回归；真实模型质量、成本与大样本统计仍待验证。
+  第 41 轮实测发现的降级假通过漏洞已在第 42 轮修复：需要模型参与的 AGENT 工作流案例现在必须通过
+  模型参与断言（成功的 `MODEL_COMPLETED` 事件 + `modelAssisted=true`），任务 `COMPLETED` 但内容
+  来自确定性降级时案例判 `FAILED`；OFFLINE、反馈回归与 `REPORT-FALLBACK-NO-MODEL` 的降级语义不变。
+  模型调用预算中止仍没有独立任务终态，它沿用"模型失败 → 确定性降级 → COMPLETED"的既有业务语义，
+  由评测断言与验收预算上限共同兜底。
 - 没有对外宣称上游 PR 或企业用户数据。
 
 ## 上游项目与许可证
@@ -356,6 +509,7 @@ CI：新增 [`.github/workflows/chainpilot-ci.yml`](.github/workflows/chainpilot
 - [简历项目简介](docs/RESUME_PROJECT_BRIEF.md)
 - [面试准备指南](docs/INTERVIEW_GUIDE.md)
 - [模块梳理](docs/CHAINPILOT_MODULES.md)
+- [第三方资源说明](docs/THIRDPARTY_NOTICES.md)
 
 ## 安全
 

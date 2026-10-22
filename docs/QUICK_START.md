@@ -26,12 +26,15 @@
 将表和数据导入到你的MySQL数据库中。
 
 ```bash
-# 示例：使用 MySQL 命令行导入
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/schema.sql
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/data.sql
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/product_schema.sql
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/product_data.sql
+# 示例：使用 MySQL 命令行导入；必须显式指定 utf8mb4
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/schema.sql
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/data.sql
+# 示例业务库只在空库执行一次；product_schema.sql 不是幂等脚本
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/product_schema.sql
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/product_data.sql
 ```
+
+完整的初始化、兼容升级、备份与回滚步骤见 [DATABASE_RELEASE.md](DATABASE_RELEASE.md)。
 
 ## ⚙️ 2. 配置
 

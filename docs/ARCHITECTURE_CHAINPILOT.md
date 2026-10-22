@@ -139,7 +139,7 @@ sequenceDiagram
 2. 模型只能解释已有上下文，不能修改正式评分。
 3. 未知订单/证据、无依据数值、执行声明、缺失 dataGap、非法推荐都拒绝。
 4. 校验失败或异常回退 `DETERMINISTIC_FALLBACK`，不标记 `MODEL_VERIFIED`。
-5. `MODEL_STARTED`、`MODEL_COMPLETED`、`MODEL_FAILED`、`FALLBACK_USED` 关联同一 taskId。
+5. `MODEL_STARTED`、`MODEL_COMPLETED`、`MODEL_FAILED`、`FALLBACK_USED` 关联同一 taskId。任务已被其他实例取消时，在途响应仍按真实类型记录，但 `status=CANCELLED` 且摘要带 `late response ignored … rawOutcome=…`；该判定读的是数据库终态，不改变模型调用与降级计数。
 
 ## 4. 决策、情景推演与沙箱边界
 
@@ -188,10 +188,16 @@ flowchart LR
 ```
 
 - OFFLINE 运行不调用模型，最多 20 个案例。
-- AGENT 运行必须显式确认，最多 5 个案例、20 分钟超时、进程内单实例锁。
+- AGENT 运行必须显式确认，最多 5 个案例、20 分钟超时、数据库租约锁（`chainpilot_evaluation_lock` 的 owner + fence）。
 - 反馈不是标准答案；草案初始不自动生成通过条件。
 - 追踪链：`feedbackId → evaluationCaseId → evaluationRunId → 实际结果`。
 - 当前 14 个 OFFLINE、6 个 AGENT 内置案例和已启用反馈案例使用同一执行入口。
+- 案例目录声明每个案例"必须执行的断言 ID"，评测按声明生成断言：未执行的声明断言会使案例 `FAILED`
+  （`ASSERTION_NOT_EVALUATED`）。需要模型参与的案例还声明模型参与断言——分析阶段要求 `modelAssisted=true`
+  与该阶段一条 `status=COMPLETED` 的 `MODEL_COMPLETED` 事件，决策阶段额外要求 `fallbackUsed=false`；
+  因此确定性降级产生的 `COMPLETED` 任务不会通过真实模型验收案例。`MODEL_STARTED`、请求计数与迟到
+  （`status=CANCELLED`）响应都不算模型参与证据。OFFLINE、反馈回归与 `REPORT-FALLBACK-NO-MODEL`
+  保持确定性降级语义，不声明模型参与断言。
 
 ## 6. 模型就绪、依赖与安全门禁
 
@@ -240,9 +246,10 @@ TASK_QUEUED → TASK_STARTED → NODE_STARTED/COMPLETED
 | 数据 | 用途 | 是否真实业务数据 |
 | --- | --- | --- |
 | `SupplyChainDemoData` | 订单、库存、供应商演示 | 否，本地模拟 |
-| `chainpilot_analysis_task` / 事件表 | 任务与事件追溯 | ChainPilot 自身运行数据 |
+| `chainpilot_analysis_task` / 事件表 | 任务与事件追溯；`owner_instance_id` / `lease_expires_at` / `fence_version` 承载任务所有权 | ChainPilot 自身运行数据 |
 | `chainpilot_disposal_*` | 决策/方案/模拟/比较/执行 | ChainPilot 模拟记录 |
 | `chainpilot_evaluation_run` / `chainpilot_evaluation_case_result` | 评测运行与结果 | ChainPilot 评测记录 |
+| `chainpilot_evaluation_lock` | 单行 `AGENT_EVALUATION` 锁，承载 AGENT 评测所有权 | ChainPilot 运行数据 |
 | `chainpilot_feedback*` | 用户反馈与草案 | ChainPilot 运行数据 |
 | H2 文件库 | 本地演示默认持久化 | 本地数据，不提交 |
 | MySQL `chainpilot_mysql_it` | 隔离集成测试 | 专用测试库，不作为生产库 |
@@ -250,13 +257,33 @@ TASK_QUEUED → TASK_STARTED → NODE_STARTED/COMPLETED
 部署端口：后端 `8065`；Next 开发默认 `3000`，生产验收使用 `3002`。Next 将
 `/api/**`、`/uploads/**` 反代到 `CHAINPILOT_BACKEND_URL`。
 
+### 8.1 所有权与租约术语（统一口径）
+
+| 术语 | 实现 | 语义 |
+| --- | --- | --- |
+| `owner_instance_id` | `chainpilot_analysis_task` 列 / `chainpilot_evaluation_lock` 列 | 当前持有者；值为 `chainpilot.instance-id`（未配置则启动时生成随机 UUID），`NULL` 表示无人持有 |
+| `lease_expires_at` | 同上，BIGINT 毫秒 | 租约到期时刻，与 `SELECT CURRENT_TIMESTAMP` 返回的**数据库时钟**比较，不比较 JVM 时钟 |
+| `fence_version` | 同上，BIGINT | 单调递增的写入门槛：领取、接管、取消、过期回收都会 +1；只有 owner 与 fence 同时匹配的写入才被接受 |
+| 租约续期 | `TaskLeaseManager.renewOwnedLeases` / `EvaluationLeaseManager.renewActiveLease`，均为 `@Scheduled`（默认每 30 秒；任务 TTL 15 分钟、评测 TTL 10 分钟、评测另有 30 分钟最长持有时限） | 续约失败即判定失权，本实例立即停止推进并放弃后续写入 |
+| 过期回收 | `TaskRecoveryCoordinator` / `EvaluationLeaseManager` 的回收调度（默认每 30 秒） | 只处理「owner 非空且租约已过期」的对象：任务标记 `FAILED / LEASE_EXPIRED`，评测运行标记 `FAILED` 且 RUNNING 案例转 `UNDETERMINED / INTERRUPTED`；绝不重放 Graph、绝不重派任务；`owner` 为空的历史遗留行不动，只在日志计数 |
+| 旧 owner 写入拒绝 | `updateOwned` / `completeAnalysis` / `completeDecision` / `saveOwned` 的 owner+fence 条件更新 | 被接管或被回收后，前持有者的状态写入与结果写入在数据库层被拒绝，无法复活对象或覆盖新持有者的结果 |
+| 取消后的迟到响应 | `SupplyChainEventRecorder` 依据数据库终态判定 | `MODEL_COMPLETED` / `MODEL_FAILED` / `FALLBACK_USED` 类型与耗时、错误类别保留（真实发生），但 `status=CANCELLED` 且摘要带 `late response ignored … rawOutcome=…`；业务结果不写入 |
+
+全局互斥一律由数据库行/条件更新保证，不存在“依靠 JVM 内存锁保证跨进程互斥”的设计；进程内标记（`TaskCancellationRegistry`
+的信号表、`ModelReadinessService` 的连接验证结果）只用于降低同实例的发现延迟或记录本进程的验证状态，
+因此多实例部署时每个 JVM 都要各自完成一次模型连接测试，未测试的实例会以 `412` 前置条件失败而不是 `409`。
+
 ## 9. 当前状态与不可宣称事项
 
 - 模型配置列表为空；没有完成真实模型 Agent E2E，也没有真实 provider usage 或费用证据。
 - H2/MySQL/假模型/前端测试通过，只能说明确定性路径、持久化、Mock 边界和 UI 契约；
   不能替代真实模型质量或生产性能验证。
+- 多实例：已在隔离 MySQL 上用两个真实 JVM 实测任务/评测所有权、租约互斥与续约、fencing 拒写、
+  跨实例取消与持有者被强杀后的过期回收（见 `docs/DATABASE_RELEASE.md` §5.3）；这不等于生产 HA/主从、
+  默认租约参数下的长时稳定性、多实例压测或备份恢复已经验证。第 35 轮实测使用的是缩短的测试参数
+  （TTL 30 秒、续约/回收 5 秒）。
 - 沙箱不是真实 ERP/WMS 执行器。
-- 连接测试状态不是跨重启持久事实。
+- 连接测试状态不是跨重启持久事实，也不是跨进程共享事实（每个 JVM 各自持有）。
 - 当前没有可核实的上游 PR 记录。
 
 ## 10. 代码入口

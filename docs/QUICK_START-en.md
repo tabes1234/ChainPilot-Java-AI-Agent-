@@ -26,12 +26,15 @@ Files are located in: `data-agent-management/src/main/resources/sql`, which cont
 Import the tables and data into your MySQL database.
 
 ```bash
-# Example: Import using MySQL command line
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/schema.sql
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/data.sql
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/product_schema.sql
-mysql -u root -p your_database < data-agent-management/src/main/resources/sql/product_data.sql
+# Example: import with the MySQL CLI; explicitly use utf8mb4
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/schema.sql
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/data.sql
+# The sample business schema is intentionally one-time; product_schema.sql is not idempotent
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/product_schema.sql
+mysql --default-character-set=utf8mb4 -u root -p your_database < data-agent-management/src/main/resources/sql/product_data.sql
 ```
+
+See [DATABASE_RELEASE.md](DATABASE_RELEASE.md) for initialization, additive upgrades, backup, verification and rollback.
 
 ## 2. Configuration
 

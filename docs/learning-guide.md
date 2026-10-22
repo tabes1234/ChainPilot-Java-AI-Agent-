@@ -75,7 +75,7 @@ ChainPilot 保留了这些既有模块，没有用供应链演示替换整个产
 - **Planner**：`createPlan` 生成可读的任务步骤；当前不决定图的动态路由。
 - **Graph 节点**：`SupplyChainWorkflowService` 维护业务执行顺序、状态推进、校验与有限重试。
 - **工具**：`SupplyChainAgentTools` 把查询服务暴露为 Spring AI 工具，并在 `@Tool` 方法内部写入实际调用的开始、完成或失败事件。Graph 节点显式调用这些工具；摘要模型请求也可通过 `.tools(agentTools)` 使用它们。
-- **任务状态**：任务和报告保存在配置的 SQL 数据库中，H2 演示配置使用文件数据库，刷新页面或单机重启后可恢复已完成记录；服务启动时会把遗留的非终态任务标记为 `FAILED / INTERRUPTED_BY_RESTART`。最近任务通过 `GET /api/supply-chain/analysis/tasks` 查询。
+- **任务状态**：任务和报告保存在配置的 SQL 数据库中，H2 演示配置使用文件数据库，刷新页面或单机重启后可恢复已完成记录；实例启动不再批量改写非终态任务，只有 `owner_instance_id` 非空且数据库租约（`lease_expires_at`，以 DB 时钟判定）已过期的任务才会被 `TaskRecoveryCoordinator` 标记为 `FAILED / LEASE_EXPIRED`。最近任务通过 `GET /api/supply-chain/analysis/tasks` 查询。
 - **SOP 检索**：`SupplyChainKnowledgeService` 检索 `src/main/resources/knowledge/supply-chain/` 中的履约规则和 SOP，引用保留来源标识。向量存储不可用时词项检索作为降级路径。
 - **报告生成**：确定性业务字段由查询数据和规则产生；可选模型只负责摘要文字。建议取自订单风险规则，引用来自知识检索。
 

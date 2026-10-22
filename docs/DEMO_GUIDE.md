@@ -174,7 +174,7 @@ JAVA_HOME="C:/Program Files/Microsoft/jdk-17.0.12.7-hotspot" ../mvnw -o -pl data
 
 单元测试覆盖补货/延期的正常、边界、非法参数、未知目标和真实数据隔离，建议优先级与受影响订单，方案保存/查询/状态迁移，模型解释引用确定性数值与失败降级，执行资格/幂等/并发/中途失败恢复，多方案 2–5 边界、共享基线、并列/不可比、排名与理由一致性、候选保存/关联和重复请求，以及 HTTP 全链路和模型工具结果。2026-10-20 的验收结果见下方“验证记录”；浏览器验收完成了补货动作的沙箱演练，验证了双点击只产生一条记录、从历史打开详情、页面刷新后仍可查询，供应商跟进动作由 HTTP 与 MySQL 集成测试覆盖。
 
-当前边界：沙箱执行依赖本地单库事务和行锁，只适用于单实例或共享同一数据库的并发请求，不声称分布式 exactly-once；其他 MySQL 版本、多实例压测、生产网络/TLS 和最小权限账号未验证。若某供应商没有任何非 LOW 风险订单，按该供应商创建方案会因“没有匹配的处置范围”返回 400，这是当前设计限制；可先按 SKU 创建方案或补充风险订单数据。
+当前边界：沙箱执行依赖单个共享数据库的事务与行锁保证幂等，跨实例的重复提交依赖该库的条件更新；它不声称跨数据库或跨存储的分布式 exactly-once。任务与评测的所有权同样只依赖共享数据库（见 `docs/ARCHITECTURE_CHAINPILOT.md` §8.1），已在隔离 MySQL 8.0.43 上用两个真实 JVM 实测互斥、fencing 与过期回收，但使用的是缩短的测试参数（TTL 30 秒、续约/回收 5 秒），且其他 MySQL 版本、多实例压测、生产网络/TLS、HA 与最小权限账号未验证。若某供应商没有任何非 LOW 风险订单，按该供应商创建方案会因“没有匹配的处置范围”返回 400，这是当前设计限制；可先按 SKU 创建方案或补充风险订单数据。
 
 ### 验证记录（2026-10-20）
 
@@ -283,7 +283,7 @@ JAVA_HOME="C:/Program Files/Microsoft/jdk-17.0.12.7-hotspot" ../mvnw -o -pl data
 3. 进入 `/agent-evaluation`，选择工作流案例。前置条件面板显示 CHAT 是否已验证、EMBEDDING 是否可选。
 4. 点击运行后，确认框显示将运行的案例、CHAT/EMBEDDING 状态、单次案例上限、超时和可能的费用范围，并明确：连接测试成功不等于工作流或断言成功；系统没有供应商价格表，不展示虚构金额。
 5. 勾选费用影响确认后启动。后端会再次校验 `confirmAgentRun=true`、所选案例显式声明的 CHAT/EMBEDDING 依赖是否满足；未满足时返回结构化 `412` 错误码，不会提交任务。
-6. 执行沿用现有保护：真实工作流单次最多 5 个案例、20 分钟超时、进程内单实例锁，并持久化运行、任务 ID、事件和断言结果。
+6. 执行沿用现有保护：真实工作流单次最多 5 个案例、20 分钟超时、`chainpilot_evaluation_lock` 数据库租约（owner + fence，默认 TTL 10 分钟、续约与回收每 30 秒、单实例最长持有 30 分钟），并持久化运行、任务 ID、事件和断言结果。第二实例启动会收到 `409`，且不会提交第二个真实运行；每个 JVM 需各自完成模型连接测试（验证状态是进程内的），否则先以 `412` 前置条件失败。
 7. 在评测中心查看运行详情；在 Agent 运行观测中心查看任务事件、模型/工具/回退诊断，并跳转原任务报告。
 
 必须区分以下五层状态，不能用其中一层替代另一层：
@@ -348,11 +348,13 @@ curl "http://localhost:8065/api/supply-chain/analysis/tasks/{taskId}/events"
 
 事件按 `sequence` 从 1 递增，`occurredAt` 为发生时间，`durationMs` 为可测量的毫秒耗时。若模型正常返回，对应阶段会记录 `MODEL_COMPLETED` 而不是 `MODEL_FAILED`；若模型返回空内容，会记录 `MODEL_COMPLETED` 后再记录 `FALLBACK_USED`。任务失败时可在对应阶段看到 `NODE_FAILED` / `TOOL_FAILED` / `MODEL_FAILED` 以及末尾的 `TASK_FAILED`，不会出现 `TASK_COMPLETED`。
 
+迟到响应的语义：模型请求一旦发出就无法被物理中止，因此另一实例提交取消后，在途响应仍可能返回。此时 `MODEL_COMPLETED` / `MODEL_FAILED` / `FALLBACK_USED` 的**类型保持不变**（调用与降级真实发生过，耗时与错误类别也保留），但 `status` 变为 `CANCELLED`，摘要以 `late response ignored; the task already reached a terminal state and nothing was persisted from it; rawOutcome=…` 开头，原始结论保留在 `rawOutcome=` 之后。也就是说审计链既不隐瞒模型调用与降级，也不会把被忽略的响应显示成已生效的结果。判定依据是数据库里的任务终态（跨实例持久化检查），不是进程内标记；模型事件计数、降级计数与错误统计的口径不因该标记而改变。
+
 边界行为：
 
 - 未知任务 ID 返回 HTTP 404；任务存在但没有任何事件时返回 `200 []`。
 - 事件只属于当前任务，不能用任务 A 的 ID 读取任务 B 的事件。
-- 服务重启后已完成任务的事件仍保存在 H2 数据库中，可再次查询；重启时被标记为 `FAILED / INTERRUPTED_BY_RESTART` 的任务不会补写虚构事件。
+- 服务重启后已完成任务的事件仍保存在 H2 数据库中，可再次查询；只有租约过期且没有活跃执行者的任务才会被标记为 `FAILED / LEASE_EXPIRED`，并且只补写一条真实的失败事件，不会伪造执行过程。
 - 事件表不包含问题原文、提示词、模型输出、工具参数、异常 message、API Key 或数据库凭据；错误事件只保留异常类名。
 - 事件写入失败不会改变分析结果。若事件缺失，可检查应用日志中的 `ChainPilot event persistence failed` 告警，其中包含任务 ID、事件类型、阶段和异常类别。
 
@@ -417,8 +419,8 @@ JAVA_HOME="C:/Program Files/Microsoft/jdk-17.0.12.7-hotspot" ../mvnw -DforkCount
 - 启动请求体：`{"caseIds":["..."],"mode":"OFFLINE"|"AGENT","confirmAgentRun":true|false}`。一次运行只能包含同一案例集版本的案例；`OFFLINE` 单次最多 20 个，`AGENT` 单次最多 5 个。`AGENT` 必须携带 `confirmAgentRun=true`，服务端会拒绝未确认请求。
 - 案例集版本：`OFFLINE` 使用 `evaluation/supply-chain-cases.json` 的 `datasetVersion`（当前 `1.0.0`），`AGENT` 使用工作流案例版本（当前 `workflow-1.0.0`）。每个案例结果额外持久化 `case_version` 与 `task_mode`；运行级 `datasetVersion` 表示该模式的案例集版本，不再混用离线数据集版本。
 - `OFFLINE`：在当前进程内调用真实的 `SupplyChainQueryService` 和词典检索 `SupplyChainKnowledgeService`，不调用模型、不写入业务表，可安全重复运行。期望值来自手工核定数据集，实际值来自被测服务，不使用被测函数生成期望值。
-- `AGENT`：必须由用户显式启动，提交真实供应链分析/决策任务，可能产生模型调用与向量化费用；进程内单实例锁保证同一时间只允许一个真实工作流评测，任务在 20 分钟后超时。查询运行详情时惰性刷新任务、报告、决策和事件结果，并按每个案例独立保存 `taskId` 与 `taskMode`。任务提交失败只影响该案例；评测不会执行沙箱，也不会修改真实业务数据。
-- 状态口径：断言全部通过为 `PASSED`；断言不通过或真实任务失败为 `FAILED`；任务超时、应用重启中断、任务状态缺失为 `UNDETERMINED`。超时或被重启中断的运行整体标记为 `FAILED` 并写入 `failure_reason`，不会留下永久 `RUNNING` 记录。重启恢复只适用于单实例部署，不声称跨实例分布式控制。
+- `AGENT`：必须由用户显式启动，提交真实供应链分析/决策任务，可能产生模型调用与向量化费用；`chainpilot_evaluation_lock` 数据库租约（owner + fence）保证同一时间只有一个实例推进真实工作流评测，任务在 20 分钟后超时。查询运行详情时惰性刷新任务、报告、决策和事件结果，并按每个案例独立保存 `taskId` 与 `taskMode`。任务提交失败只影响该案例；评测不会执行沙箱，也不会修改真实业务数据。
+- 状态口径：断言全部通过为 `PASSED`；断言不通过或真实任务失败为 `FAILED`；任务超时、任务被取消、评测租约过期中断、任务状态缺失为 `UNDETERMINED`。超时、被取消或租约过期中断的运行整体标记为 `FAILED` 并写入 `failure_reason`。工作流案例在目录里声明“必须执行的断言 ID”，若某条声明的断言因为分类不匹配、证据缺失或断言实现变更而没有实际执行，案例记为 `FAILED`（`failure_type=ASSERTION_NOT_EVALUATED`），不会因为“跑过的断言恰好都通过”被判为 `PASSED`；库存缺口案例的缺口断言按报告中的真实 `inventoryShortage` 计数判定，不只看文本非空。需要模型参与的案例还断言模型确实成功参与（`report-model-assisted`/`report-model-completed`、`decision-model-assisted`/`decision-model-completed`）：任务 `COMPLETED` 但内容是确定性降级产物时，该案例必须 `FAILED`。评测推进与终态写入都受数据库租约保护：fence 变更或租约到期后，旧实例不会再写入运行状态或案例结果；没有活跃执行者的运行由任一存活实例标记为 `FAILED`，不会留下永久 `RUNNING` 记录，也不会自动重跑任务。
 - 运行与每案例结果持久化在 `chainpilot_evaluation_run`、`chainpilot_evaluation_case_result`。应用启动时通过 `EvaluationRunRepository` 创建表并做增量升级（新增 `failure_reason`、`case_version`、`task_mode` 列，索引、唯一约束和外键）；不删除或重建业务表。参考 DDL 与升级语句为 `data-agent-management/src/main/resources/sql/agent-evaluation.sql`。
 - 指标按 `OFFLINE` 与 `AGENT` 分开返回（`byMode`），**不合并成一个 Agent/模型成功率**。只有状态为 `COMPLETED`、`completedAt` 存在、结果数量等于 `totalCases`、计数与结果状态一致且没有 `RUNNING` 结果的运行才计入；不满足的运行计入 `excludedIncompleteRuns`。案例级与运行级平均耗时、P95 分开统计，P95 少于 5 个样本时返回 `null`。RAG 指标只在存在检索样本时计算 HitRate@3 与 MRR，否则返回 `null`；不采集 Precision@K 时不展示。
 - 运行对比只读取两次持久化运行：要求同一模式、同一案例集版本、完整结果和相同案例 ID 集合；逐案例断言 ID 集合也必须一致。不满足时返回 `comparable=false` 并列出缺失/多出案例或断言集合差异，不允许把不同测试集当作同一集直接比较。差异包括新增失败、已修复失败、持续失败、未变化通过、仍无法判定以及断言级期望/实际变化。
@@ -443,7 +445,7 @@ JAVA_HOME="C:/Program Files/Microsoft/jdk-17.0.12.7-hotspot" ../mvnw -DforkCount
   -Dtest='EvaluationMySqlPersistenceIT,EvaluationMySqlLegacyUpgradeIT' test
 ```
 
-在 MySQL 8.0.43（本机 `127.0.0.1:33306`，专用 `chainpilot_mysql_it`）上实测：评测持久化 5/5、旧版评测表真实 MySQL 升级 1/1、既有供应链 MySQL IT 16/16，共 22/22 通过。旧表升级测试先创建初版评测表并插入旧运行/结果，再直接实例化 `EvaluationRunRepository` 走应用启动迁移逻辑，验证旧数据保留、新列可读写、唯一约束/外键/级联与重复启动幂等；不会对生产库执行 DROP 或数据清理。该临时 MySQL 实例仅在验证期间启动，验证后关闭并移除；不把 H2 结果当作 MySQL 结果。
+在 MySQL 8.0.43（本机 `127.0.0.1:33306`，专用 `chainpilot_mysql_it`）上实测：评测持久化 5/5、旧版评测表真实 MySQL 升级 1/1、供应链持久化 21/21、供应链 HTTP 6/6、反馈 1/1，共 34/34 通过。供应链持久化覆盖取消状态与 `TASK_CANCELLED` 事件同事务提交、事件写入失败回滚、重复取消幂等、完成态不可取消、跨仓库实例并发事件序号、可重复读事务内的序号冲突重试、独立事务并发追加与防死锁、取消事务并发事件追加、终态竞争、取消状态重启保留和有业务引用任务的保留；供应链 HTTP 覆盖完整分析链路与历史分页。旧表升级测试先创建初版评测表并插入旧运行/结果，再直接实例化 `EvaluationRunRepository` 走应用启动迁移逻辑，验证旧数据保留、新列可读写、唯一约束/外键/级联与重复启动幂等；不会对生产库执行 DROP 或数据清理。该临时 MySQL 实例仅在验证期间启动，验证结束后关闭但保留隔离数据目录，不删除已有测试数据；不把 H2 结果当作 MySQL 结果。
 
 评测中心不改变原有离线评测测试及其独立报告。真实工作流评测不会在测试或启动时自动执行；没有配置模型时，任务按现有确定性降级路径完成，但结果仍按真实断言评估。
 
@@ -466,7 +468,9 @@ JAVA_HOME="C:/Program Files/Microsoft/jdk-17.0.12.7-hotspot" ../mvnw -DforkCount
 | `chainpilot.real-model.completions-path` | `CHAINPILOT_REAL_MODEL_COMPLETIONS_PATH` | 否 | 自建兼容服务需要时填写；默认沿用现有 OpenAI 兼容路径。 |
 | `chainpilot.real-model.max-tokens` | `CHAINPILOT_REAL_MODEL_MAX_TOKENS` | 否 | 默认 2048，范围 1–2048。DeepSeek 思考模式等推理模型的 `reasoning_content` 也计入该预算；预算过小可能出现 `finish_reason=length` 且可见内容为空。 |
 | `chainpilot.real-model.timeout-seconds` | `CHAINPILOT_REAL_MODEL_TIMEOUT_SECONDS` | 否 | 默认 180，范围 30–600；用于测试等待任务终态，不是生产任务的硬超时。 |
-| `chainpilot.real-model.max-model-calls` | `CHAINPILOT_REAL_MODEL_MAX_MODEL_CALLS` | 否 | 默认 12，范围 1–50；每个验收场景的模型请求硬上限。 |
+| `chainpilot.real-model.max-model-calls` | `CHAINPILOT_REAL_MODEL_MAX_MODEL_CALLS` | 否 | 默认 12，范围 1–50；每个验收场景的模型阶段（`gen_ai.client.operation`）硬上限。 |
+| `chainpilot.real-model.max-http-attempts` | `CHAINPILOT_REAL_MODEL_MAX_HTTP_ATTEMPTS` | 否 | 默认 20，范围 1–40；单个场景实际出站请求尝试的硬上限，覆盖模型阶段数覆盖不到的部分：Spring AI 1.1.2 默认重试模板对 5xx 与连接/读取超时最多重发 10 次，原生 Tool Calling 的每个后续回合都是新的一次请求。超限时后一次请求在发出前被拦截。 |
+| `chainpilot.real-model.max-run-http-attempts` | `CHAINPILOT_REAL_MODEL_MAX_RUN_HTTP_ATTEMPTS` | 否 | 默认 60，范围 1–100；整次验收运行的出站请求总量上限，跨场景累计且不随场景重置；必须不小于 `max-http-attempts`，否则配置校验直接失败。 |
 
 运行方式：
 
@@ -503,13 +507,82 @@ PowerShell 请先用 `$env:CHAINPILOT_REAL_MODEL_* = "..."` 设置环境变量�
 - **失败是否如实降级**：场景 4 的本地 401 端点产生真实的模型边界异常，事件、标记、摘要和 `toolCalls` 必须一致。不要把规则降级摘要描述为模型生成，也不要把本地 401 写成外部真实模型失败。
 - **观测是否安全**：测试断言观测属性不包含 API Key、标准问题标记或基础连通性提示词。验收证据只记录计数、布尔值、订单 ID、工具名、端点 `scheme://host:port`、耗时上限，以及不含正文的模型协议诊断（`finish_reason`、token 计数、工具调用/结果计数、结果回传匹配和空值布尔），不记录提示词、完整回答、`reasoning_content`、工具参数或结果。
 
-**边界与费用**：每个测试方法有 10 分钟 JUnit 超时；基础、报告、工具调用三个外部场景各自受 `max-model-calls` 上限约束（默认最多 12 次），场景 4 只访问本地端点，不产生付费调用；任务轮询受 `timeout-seconds` 限制，单次模型 HTTP 读取沿用现有 `DynamicModelFactory` 的 3 分钟超时。实际账单取决于供应商计价、重试和模型输出长度，默认值只是控制手段，不是费用上限承诺。不要把该验收接入 CI 默认流程、应用启动或配置加载；需要时显式运行，关闭时不传 `-Dchainpilot.real-model.acceptance=true` 即可。
+**边界与费用**：每个测试方法有 10 分钟 JUnit 超时。两道预算同时生效且都在请求发出前拦截：`max-model-calls` 统计模型阶段观测（`gen_ai.client.operation`），`max-http-attempts` / `max-run-http-attempts` 统计实际出站请求尝试（`http.client.requests`），后者必须存在，因为一个模型阶段不等于一次请求——实测 Spring AI 1.1.2 的 `RetryUtils.DEFAULT_RETRY_TEMPLATE` 为 `maxAttempts=10`、指数退避 2 s、倍数 5、上限 180 s，且只重试 5xx 与连接/读取超时（4xx 含 429 映射为 `NonTransientAiException`，库层不重试；应用层 `callWithRateLimitRetry` 才会对限流重试，最多 3 次），原生 Tool Calling 的每个后续回合同样各算一次请求。场景 4 只访问回环端点，不产生付费调用，但它的两次尝试同样计入请求预算（计入是保守方向，不会低估用量）。任务轮询受 `timeout-seconds` 限制；单次模型 HTTP 读取沿用现有 `DynamicModelFactory` 的 3 分钟超时，因此库层重试风暴主要是时间风险：一个阶段最坏 10 次尝试加退避可超过 15 分钟任务租约与 20 分钟评测超时，这不是预算能改变的事实，验收窗口必须为此留量。实际账单取决于供应商计价、重试和模型输出长度，默认值只是控制手段，不是费用上限承诺；执行前应在供应商侧确认硬配额或消费上限。不要把该验收接入 CI 默认流程、应用启动或配置加载；需要时显式运行，关闭时不传 `-Dchainpilot.real-model.acceptance=true` 即可。
 
 **当前状态（2026-10-20）**：已使用 DeepSeek `deepseek-flash` 完成四场景真实验收，配置为 `provider=custom`、Base URL `https://api.deepseek.com`、Completion Path `/chat/completions`、`max-tokens=2048`、`max-model-calls=12`。实际结果为 `Tests run: 4, Failures: 0, Errors: 0, Skipped: 0`，测试类耗时 24.97 s。基础调用、模型报告生成、原生 Tool Calling 和本地 401 降级均通过；报告场景中 `plannerAssisted=true`、`modelAssisted=true`，`PLANNING` 与 `GENERATING_REPORT` 各一次 `MODEL_COMPLETED`，无 `MODEL_FAILED` / `FALLBACK_USED`；Tool Calling 场景中 `findInventory` 由模型发起，工具结果非空，后续请求中的工具响应与先前 `tool_call_id` 匹配，最终摘要包含工具返回的 ATP `25`。证据文件为 `data-agent-management/target/chainpilot-real-model-acceptance/real-model-acceptance-evidence.json`，其中 `complete=true`、`fullScope=true`。本次 DeepSeek 思考模式保持默认开启，观测到的 `finish_reason` 为 `STOP` 或 `TOOL_CALLS`，未出现 `length`，Tool Calling 闭环完成，因此未添加 `thinking` 参数或修改生产请求选项。该结论只代表本次 DeepSeek 配置与本地环境，不代表其他供应商、生产 Langfuse 导出链路或其他模型已经验证。
 
+**当前状态（2026-10-22，第 40 轮，零付费预检）**：上面 2026-10-20 的通过记录是历史证据，不能继续当作当前代码的真实模型验收结论：该 harness 自那次运行之后没有再执行过，而模型配置链路在此期间新增了 `ModelReadinessService`（`ModelConfigOpsService`、`ModelConfigController` 都依赖它），验收类的测试上下文因此已无法启动——它能编译，只有实际运行才会暴露。本轮修复了三处工程缺口并只做零付费验证：harness 上下文补齐生产 Bean 后现在可以启动（由 `RealModelAcceptanceContextTest` 与“启用但没有配置”的运行共同证明，两者都确认没有发出任何出站请求）；工作流案例改为声明“必须执行的断言”，库存缺口断言不再被案例分类跳过；模型预算增加实际出站请求两道上限并由 `RealModelCallBudgetTest` 用回环端点实测（1 个模型阶段在 5xx 下确实产生多次请求，第 3 次在发出前被拦截；429 只有 1 次；成功调用只有 1 次）。评测中心的 AGENT 真实模型运行仍没有专用 harness（它的上下文不含 `AgentEvaluationService`/`AgentEvaluationController` 与评测租约），需要单独开发（该缺口已于第 43 轮补齐，见“评测中心 AGENT 真实模型验收”一节）。真实模型仍为 `NOT_CONFIGURED`/阻塞，本轮未调用任何外部模型，也未重跑真实模型四场景。
+
+**当前状态（2026-10-22，第 41 轮，Tool Calling 预算与状态语义零付费验证）**：预算现在覆盖完整工具回环，并用本地回环 OpenAI 兼容端点实测（`RealModelToolCallBudgetTest`）：一次健康链路 = 3 个模型阶段 = 3 次出站请求 = 服务端实收 3 次（规划、模型发起 `findInventory`、工具结果回传后的最终回答），工具只执行一次且报告 `modelAssisted=true`；把场景请求上限压到 2 时，第 3 次请求在发出前被拦截，服务端只收到 2 次，任务按既有语义以确定性降级完成（`modelAssisted=false`、`plannerAssisted=false`、`MODEL_FAILED`+`FALLBACK_USED` 各一次、`MODEL_COMPLETED=0`、终态事件恰好一条），且降级之后服务端不再收到任何请求；库层 5xx 重发与工具回合共用 run 级上限（run 上限 4 时实收 4、计数 5、第 5 次被拒），429 仍只有应用层的 3 次尝试（阶段数=请求数=4 含规划）；场景重置不会重置 run 级总量与超限标志。状态语义另由 `SupplyChainBudgetAbortStateTest` 在 H2 上验证，这是第一次把真实 `TaskLeaseManager` 接入工作流测试（以往工作流测试没有挂载租约管理器，走的都是无 fencing 分支）：预算中止与取消竞争时，先到者写入唯一终态，取消先落地则报告与终态事件都不会被中止路径覆盖，中止先完成则取消被拒绝且 owner/lease/fence 不变；租约被接管后，续约把本实例标记为失权、失权即本地取消信号、迟到的模型响应在触达 Provider 之前被拒绝，失权实例的 `completeAnalysis/updateOwned/renewTaskLease/claimTask` 全部被拒绝，任务不会被复活，新 owner 仍能正常完成它。
+**已修复的假通过漏洞（2026-10-22，第 42 轮）**：第 41 轮实测发现，预算中止或 Provider 失败会走"模型失败 → 确定性降级 → 任务 COMPLETED"，而工作流案例不断言模型是否真的参与，因此一次全程降级的运行也可能被判 PASSED。现在需要模型参与的案例必须声明并通过模型参与断言：分析类案例要求 `report-model-assisted`（`modelAssisted=true`）与 `report-model-completed`（该阶段存在 `status=COMPLETED` 的 `MODEL_COMPLETED` 事件），决策类案例要求 `decision-model-assisted`（`modelAssisted=true` 且 `fallbackUsed=false`）与 `decision-model-completed`。`MODEL_STARTED` 只证明发起过调用，迟到响应会以 `status=CANCELLED` 记录且不产生成功计数，两者都不足以通过模型参与断言。语义边界保持不变：确定性降级仍然是合法的业务行为（`REPORT-FALLBACK-NO-MODEL` 与 14 个 OFFLINE 案例、反馈回归案例都不要求模型参与，OFFLINE 路径不调用模型）；`WF-DECISION-UNSUPPORTED` 由确定性意图解析处理、设计上不调用模型，因此它只证明"不伪造业务结果"，不能用来证明模型可用。
+
+以下概念在评测与验收中不得混为一谈：`COMPLETED` 只表示业务任务完成；`modelAssisted=true` 表示报告/决策内容确实由模型成功产出并被采纳；`MODEL_STARTED` 表示某个模型阶段发起过调用；`MODEL_COMPLETED`（`status=COMPLETED`）表示该阶段真实成功；`FALLBACK_USED` 表示发生了确定性降级；真实模型验收案例 `PASSED` 表示模型参与断言与业务契约断言全部满足且都已实际执行。
+
+## 评测中心 AGENT 真实模型验收（可选，可能产生外部调用费用）
+
+评测中心的 AGENT 运行与被测代码同源，因此它有自己的验收入口，而不是复用上面四个场景的 harness：
+
+- `SupplyChainRealModelAgentEvaluationIT`：**授权后**才执行的真实 Provider 运行。走的正是评测中心生产入口 `POST /api/agent-evaluation/runs`（`mode=AGENT`、`confirmAgentRun=true`），因此它经过与页面完全相同的就绪预检（未通过返回 412）、评测数据库租约、案例版本与终态写入。
+- `RealModelAgentEvaluationHarnessTest`：默认就会执行的**本地回环彩排**。它用同一个 Spring 上下文和同一个脚本化 OpenAI 兼容端点，证明上述门禁与断言真的会拒绝降级，不产生任何外部调用。它的证据文件与真实 Provider 证据分文件存放，标题明确写出“非真实 Provider”，不能当作真实模型验收结论。
+
+两者复用既有基础设施：模型配置只通过生产接口 `POST /api/model-config/add` 与 `/activate/{id}` 写入、`/test/{id}` 是唯一允许的真实远程调用、`/check-ready` 只做本进程就绪判断；预算沿用第 40/41 轮的 `max-model-calls`（模型阶段）与 `max-http-attempts` / `max-run-http-attempts`（实际出站请求），超限请求在发出前被拦截。
+
+### 案例选择规则
+
+新增属性 `chainpilot.real-model.agent-cases`（环境变量 `CHAINPILOT_REAL_MODEL_AGENT_CASES`，默认 `WF-ANALYSIS-HIGH-RISK`，一次最多 5 个）。资格由案例自身的契约决定，与名称无关：必须同时是 AGENT 案例**且**声明了模型参与断言。以下选择会在 `@BeforeAll` 阶段被逐项拒绝并给出原因，此时尚未构建任何请求：
+
+| 被拒绝的选择 | 原因 |
+| --- | --- |
+| `WF-DECISION-UNSUPPORTED` | 确定性意图解析、设计上不调用模型，只声明护栏断言；它证明“不伪造业务结果”，不能计入模型成功率。 |
+| `REPORT-FALLBACK-NO-MODEL` | 为降级行为而存在，不是工作流目录案例，未声明模型参与断言。 |
+| `ORDER-ORD-1001` 等 OFFLINE 案例 | OFFLINE 模式从不调用模型。 |
+| 未知 ID | 不在评测案例目录中。 |
+
+单个案例判 PASSED 的条件是：任务终态 `COMPLETED`；该案例声明的必需断言全部实际执行（缺失即 `ASSERTION_NOT_EVALUATED` 失败）；模型参与断言成立（`modelAssisted=true`，且对应阶段存在 `status=COMPLETED` 的 `MODEL_COMPLETED`）；`FALLBACK_USED` 恰好为 0；`observation_json` 记录 `modelAssisted:true`；评测租约已释放；出站请求未超上限。`MODEL_STARTED` 与请求计数本身不构成通过证据。
+
+### 真实运行的副作用与隔离前提（第 44 轮审计）
+
+真实验收不是只读操作。下表是 `@BeforeAll` → 配置写入 → 激活 → 连接测试 → 评测运行 → 证据写入各自真实的读写范围，全部以当前代码为准：
+
+| 步骤 | 真实副作用 |
+| --- | --- |
+| `POST /api/model-config/add` | `model_config` 新增 1 行；API Key **以明文列存储**，响应与列表接口返回掩码值（`****` + 末 4 位）。 |
+| `POST /api/model-config/activate/{id}` | 事务内先把**同 model_type 的所有其他行** `is_active` 置 0，再激活目标行；并清空进程内模型缓存。这就是不能在日常演示库上跑的原因。 |
+| `POST /api/model-config/test/{id}` | 唯一会发出真实远程请求的入口：一次 `call("Hello")`；就绪状态只存在**本进程内存**（`ModelReadinessService` 的 map），不落库、不跨 JVM。库层默认重试模板仍可能重发，所以它同样消耗请求预算。 |
+| `GET /api/model-config/check-ready` | 只读；返回 `NOT_CONFIGURED`/`CONFIGURED_UNVERIFIED`/`TEST_FAILED`/`VERIFIED` 与 `verificationScope=CURRENT_BACKEND_PROCESS`。 |
+| `POST /api/agent-evaluation/runs`（AGENT） | 写 `chainpilot_evaluation_lock`（取得 owner/fence/run_id）、每案例 1 行 `chainpilot_analysis_task` + `TASK_QUEUED` 事件、`chainpilot_evaluation_run` 与 `chainpilot_evaluation_case_result` 快照（先删后插）。注意副作用：提交任务会触发 `pruneTasks()`，删除该库中**超过 24 小时的终态任务与其事件**。 |
+| 运行推进 | 没有独立评测工作线程：案例状态只在有 `GET /api/agent-evaluation/runs/{id}` 轮询时推进（harness 每 2 秒一次）。 |
+| `@AfterAll` 证据 | 只写 `target/chainpilot-real-model-acceptance/`，按端点性质选择文件与标题，不写库。 |
+| 失败与残留 | 若 JVM 在持久化之后死亡：run 与案例留在 `RUNNING`、锁行保留 owner 与到期时间，直到 `lease_expires_at < 数据库时钟`（TTL 600 s、max-hold 1800 s、续约/回收 30 s）后由恢复逻辑改写为 `FAILED`/`INTERRUPTED`，**不重放**；评测行永不自动删除，只有 harness 自己在预检里清空。 |
+
+隔离前提由运行自己证明，不依赖属性文件名或 Maven profile：`@BeforeAll` 从**实际打开的连接**取 `DatabaseMetaData.getURL()`，要求它是 `jdbc:h2:mem:chainpilot_real_model_agent_acceptance`，否则在任何写入之前失败（失败信息只说数据库种类，绝不回显主机、路径或 URL 参数）。这一点必要，因为默认 profile 的数据源是共享 MySQL `saa_data_agent`，而演示 profile 是文件库 `./data/nl2sql_database`——两者都保存 `model_config`。清库与激活之后还会在同一连接上断言 `model_config` 只剩 1 行、激活的 CHAT 配置只有 1 个，作为“写入确实落在隔离库”的可见证据。
+
+证据标签由端点性质决定：只有 Base URL 指向非回环、非本机地址时才写 `agent-real-model-acceptance-evidence.*` 并标注“真实 Provider”；指向 `127.0.0.1`/`localhost`/`::1`/`0.0.0.0`/`*.localhost` 时写 `agent-local-endpoint-evidence.*`（回环彩排 harness 写 `agent-harness-loopback-evidence.*`），三者互不覆盖。第 44 轮就是用一次“配置齐全但端点不可达”的门禁演练发现旧规则只看 scope 字符串、会把本机端口写成真实 Provider 证据的。
+
+**当前状态（2026-10-22，第 44 轮，零付费、未授权）**：门禁 1（未开关，3 例 skipped）、门禁 2（开关开、缺配置，逐项列出 4 个必需属性）、门禁 3（`REPORT-FALLBACK-NO-MODEL,WF-DECISION-UNSUPPORTED` 被拒绝并给出原因）、门禁 4（混入 OFFLINE 案例被拒绝）全部复现，端点主机与占位密钥在日志中出现 0 次。新增门禁 5：配置齐全但 Base URL 指向不可达的本机端口时——预检通过（隔离标记 `h2-mem`、`model_config` 仅 1 行、激活 CHAT 仅 1 个），连接测试如实 `TEST_FAILED`，`POST /api/agent-evaluation/runs` 返回 **412**，因此没有创建 run、任务或租约（证据中 `run.id` 为空），产物按端点性质写成 `agent-local-endpoint-evidence.*` 且 `providerEvidence=false`。这一轮还修掉了三个只能在真实链路上暴露的缺陷：`WebTestClient` 默认 5 秒响应上限会在 Provider 只是“慢”的时候误报 harness 失败（现改为跟随 `timeout-seconds`，实测不可达端口在 3 次请求上限下耗约 67 秒墙钟，说明预算管请求数不管时间）；`capabilities` 响应根本没有 `verificationScope` 字段（该值只在 `check-ready` 暴露，断言已改到正确入口并在回环彩排中先证明字段存在）；IPv6 字面量 `[::1]` 未被识别为本机地址。回环彩排 12/12、验收包 39/39、全量 H2 回归独占重跑 **2047/2047**、Checkstyle 0 violations。**真实 Provider 的评测中心 AGENT 验收仍未执行**：当前环境没有配置任何 `CHAINPILOT_REAL_MODEL_*` 凭据，也没有供应商侧费用上限确认。
+
+
+### 运行方式
+
+```bash
+cd data-agent-management
+CHAINPILOT_REAL_MODEL_PROVIDER="<provider-label>" \
+CHAINPILOT_REAL_MODEL_BASE_URL="https://<host>" \
+CHAINPILOT_REAL_MODEL_MODEL_NAME="<model-name>" \
+CHAINPILOT_REAL_MODEL_API_KEY="<api-key>" \
+JAVA_HOME="C:/Program Files/Microsoft/jdk-17.0.12.7-hotspot" \
+../mvnw -DforkCount=0 -Dchainpilot.real-model.acceptance=true \
+  -Dchainpilot.real-model.agent-cases="WF-ANALYSIS-HIGH-RISK,WF-DECISION-COMPARE" \
+  -Dtest="SupplyChainRealModelAgentEvaluationIT" test
+```
+
+凭据仍只经环境变量或系统属性传入，不写进源码、日志或报告；配置列表接口返回的是掩码值，彩排测试对此有断言。真实运行写出 `data-agent-management/target/chainpilot-real-model-acceptance/agent-real-model-acceptance-evidence.json` 与同名 `.md`，其中 `concepts` 段落把上述六个概念分列，任何一项都不得用另一项替代；`complete=false` 表示存在失败案例，不构成验收通过。
+
+**当前状态（2026-10-22，第 43 轮，未授权、零付费）**：harness 已建成并做过四道门禁的实测，全部没有触网。未开启授权开关时该类 3 个测试均为 skipped；开启但缺配置时在 `@BeforeAll` 失败并逐项列出 `provider`/`base-url`/`model-name`/`api-key` 缺失，末尾为 `No external model request was made.`；配置齐全但选择 `REPORT-FALLBACK-NO-MODEL,WF-DECISION-UNSUPPORTED` 时被拒绝，原因为“未声明模型参与断言 / 不是工作流目录案例”；把 OFFLINE 的 `ORDER-ORD-1001` 混入合法 AGENT 案例时同样被拒绝，原因为“an OFFLINE case never calls the model”。这四次运行日志中被探测的端点主机名出现 0 次、占位密钥出现 0 次，也没有写出任何真实 Provider 证据文件。本地回环彩排 11/11 通过，覆盖 412 预检、400 未确认、健康通过、双阶段 401 降级判 FAILED、报告阶段单独失败、被采纳标记伪造、声明断言未执行、OFFLINE 运行 0 请求、run 级预算、证据文件脱敏与案例资格。全量 H2 回归 **2045/2045**、Checkstyle 0 violations。一个必须保留的实现约束：harness 的 Spring 配置必须是验收类里的嵌套类——`ChainPilotTestApplication` 会扫描整个 `supplychain` 测试包，放在该包下的顶层 `@Configuration` 会被所有供应链 HTTP 测试上下文加载，与本应由 `@SpringBootTest(classes=…)` 显式引入的图冲突（本轮全量回归就是这样暴露出第二个 `AiModelRegistry` 导致 38 个用例上下文启动失败的）。**真实 Provider 的评测中心 AGENT 验收仍未执行**：它需要用户授权的有效模型配置与明确许可。
+
 ## 验证持久化
 
-完成一次分析后记录任务 ID。重启后端并刷新页面，右侧“最近分析”仍会列出该任务，点击即可重新打开报告；也可以调用 `GET /api/supply-chain/analysis/tasks` 查看近期任务，再通过 `GET /api/supply-chain/analysis/tasks/{taskId}` 与 `GET /api/supply-chain/analysis/tasks/{taskId}/report` 读取状态和报告。H2 演示数据位于应用工作目录的 `data/nl2sql_database.mv.db`，该文件已被 Git 忽略。若服务在 Graph 执行中关闭，重启后该未完成任务会记录为 `FAILED`，步骤为 `INTERRUPTED_BY_RESTART`，不会伪装成已恢复执行。
+完成一次分析后记录任务 ID。重启后端并刷新页面，右侧“最近分析”仍会列出该任务，点击即可重新打开报告；也可以调用 `GET /api/supply-chain/analysis/tasks` 查看近期任务，再通过 `GET /api/supply-chain/analysis/tasks/{taskId}` 与 `GET /api/supply-chain/analysis/tasks/{taskId}/report` 读取状态和报告。H2 演示数据位于应用工作目录的 `data/nl2sql_database.mv.db`，该文件已被 Git 忽略。若服务在 Graph 执行中关闭，新启动的实例**不会**在启动瞬间批量改写未完成任务：该任务保留原状态和过期的 owner 租约，直到租约回收周期（默认 30 秒一轮、TTL 15 分钟）把它标记为 `FAILED`、步骤 `LEASE_EXPIRED`，只追加一条真实失败事件且不重放 Graph；没有 owner 的历史遗留行保持原状。单库单机演示中这两者等价，但语义不再依赖“重启”这一事件。
 
 ## MySQL 持久化与 HTTP 链路验证（可选）
 
@@ -531,6 +604,7 @@ Pop-Location
 HTTP 测试使用 30 秒上限轮询到终态，验证任务 ID、终态、`updatedAt`、报告可用性、历史筛选/分页头、报告字段和事件序号；报告风险订单必须等于确定性 `SupplyChainQueryService.findAtRiskOrders()` 输出，`plannerAssisted=false`、`modelAssisted=false`、`toolCalls` 为空，事件中恰有 `MODEL_FAILED` 和 `FALLBACK_USED` 各两次且没有 `MODEL_COMPLETED`。`AiModelRegistry` 仅在模型边界被替换为抛出异常的测试替身，No real model request is made；数据库确认没有 `model_config` 表，不导入开发环境模型配置或 API Key。测试还使用新的数据源和 Repository 读取已提交结果，但这只是连接重建，不是进程级重启验收。
 
 **当前状态（2026-10-20 稳定性收尾）**：已用临时本地 MySQL 8.0.43（InnoDB、utf8mb4，仅回环监听）在 `chainpilot_mysql_it` 专用库上重新运行两个 IT，HTTP 6/6（含新增 `decisionComparisonSaveProposalCreatesOneLinkedPlanOnlyAfterConfirmationInMySql`）、持久化 10/10、合并 16/16 通过，`BUILD SUCCESS`；同轮全量 H2 回归 1882/1882 通过。新增 MySQL 用例覆盖：DECISION 任务通过 `compareDisposalScenarios` 生成 3 个候选；保存候选提案创建后、确认前没有方案；错误内容哈希返回 400 且仍无方案；确认后恰好生成 1 个 `PENDING_CONFIRMATION` 方案，方案任务归属提案任务、持有独立 simulation 副本且补货数量与模拟指标同来源候选一致、候选 `linkedPlanId` 正确；重复确认返回同一 `planId`，不新增方案或提案；随后直接 JDBC 核对提案、方案与候选行，并用新数据源和新 Repository 重读。HTTP IT 其余用例继续覆盖方案对比及候选的 MySQL 持久化、历史、保存为方案和关联；持久化 IT 继续覆盖 DECISION 任务结果、提案确认边界与级联删除、执行表约束与 JSON 读写、连接重建、重复键回滚、失败重试和分页。另执行过真实进程级重启：创建方案与 `SUCCEEDED` 执行后停止并重启 Spring Boot，执行详情、5 个步骤、草稿和历史仍可查询，幂等重放返回原记录（早前沙箱增量，本轮未重复）。本轮未调用真实模型。当前环境没有 Docker，因此 Testcontainers 路径未执行；未验证其它 MySQL 版本、多实例并发、生产网络/TLS、HA/主从和最小权限账号。验证后临时 MySQL 实例已停止。
+（该记录为 2026-10-20 时点状态，其中的“多实例并发未验证”已被后续进展部分取代：第 34 轮在隔离 MySQL 上完成 30/30 所有权集成测试，第 35 轮用两个真实 JVM 完成互斥、fencing、跨实例取消与强杀后过期回收实测，见 `docs/DATABASE_RELEASE.md` §5.2/§5.3；该轮仍未验证的是多实例压测、其它 MySQL 版本、TLS、HA 与最小权限账号。）
 
 ## 五个业务验收场景
 
