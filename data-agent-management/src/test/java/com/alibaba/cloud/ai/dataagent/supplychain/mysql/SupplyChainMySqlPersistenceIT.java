@@ -46,6 +46,7 @@ import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainAnalysisSer
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainDecisionService;
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainEventRecorder;
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainWorkflowService;
+import com.alibaba.cloud.ai.dataagent.supplychain.service.TaskRecoveryCoordinator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -65,9 +66,16 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -395,9 +403,10 @@ class SupplyChainMySqlPersistenceIT {
     }
 
     @Test
-    void newConnectionReadsCommittedDataAndRecoversInterruptedTasks() {
+    void newConnectionReadsCommittedDataAndOnlyRecoversExpiredLeases() {
         Instant now = Instant.now();
         seedTask("task-running", "running", now);
+        seedTask("task-stalled", "stalled", now);
         seedTask("task-completed", "completed", now.minusSeconds(1));
         RiskAnalysisReport report = new RiskAnalysisReport("task-completed", SupplyChainTaskState.COMPLETED,
                 "已完成", List.of("查询订单"), false, List.of(), List.of(), List.of(), List.of(), false, 0, now);
@@ -407,18 +416,42 @@ class SupplyChainMySqlPersistenceIT {
         events.append("task-completed", SupplyChainEventType.TASK_COMPLETED, "WORKFLOW",
                 SupplyChainEventStatus.COMPLETED, now, 1L, "done", null);
 
+        long dbNow = tasks.databaseNowMillis();
+        assertTrue(tasks.claimTask("task-running", "jvm-live", dbNow + 600_000));
+        assertTrue(tasks.claimTask("task-stalled", "jvm-dead", dbNow - 1_000));
+        tasks.update(new SupplyChainTaskStatus("task-running", SupplyChainTaskState.RUNNING, "QUERYING_ORDERS",
+                0, null, now));
+        tasks.update(new SupplyChainTaskStatus("task-stalled", SupplyChainTaskState.RUNNING, "QUERYING_ORDERS",
+                0, null, now));
+
         DriverManagerDataSource recreatedDataSource = new DriverManagerDataSource(jdbcUrl, username, password);
         JdbcTemplate recreatedJdbc = new JdbcTemplate(recreatedDataSource);
         SupplyChainTaskRepository recreatedTasks = new SupplyChainTaskRepository(recreatedJdbc, mapper());
         SupplyChainEventRepository recreatedEvents = new SupplyChainEventRepository(recreatedJdbc);
+        TaskRecoveryCoordinator recovery = new TaskRecoveryCoordinator(recreatedTasks, recreatedEvents,
+                new DataSourceTransactionManager(recreatedDataSource));
 
-        SupplyChainTaskStatus recovered = recreatedTasks.findTask("task-running").orElseThrow();
-        assertEquals(SupplyChainTaskState.FAILED, recovered.status());
-        assertEquals("INTERRUPTED_BY_RESTART", recovered.currentStep());
-        assertTrue(recovered.error().contains("restarted"));
+        // A second JVM coming up must not treat another instance's live task as a restart leftover.
+        assertEquals(SupplyChainTaskState.RUNNING, recreatedTasks.findTask("task-running").orElseThrow().status());
+        assertEquals(SupplyChainTaskState.RUNNING, recreatedTasks.findTask("task-stalled").orElseThrow().status());
         assertEquals(SupplyChainTaskState.COMPLETED, recreatedTasks.findTask("task-completed").orElseThrow().status());
         assertEquals(report, recreatedTasks.findReport("task-completed").orElseThrow());
         assertEquals(1, recreatedEvents.findByTaskId("task-completed").size());
+
+        recovery.recoverExpiredTasks();
+
+        SupplyChainTaskStatus recovered = recreatedTasks.findTask("task-stalled").orElseThrow();
+        assertEquals(SupplyChainTaskState.FAILED, recovered.status());
+        assertEquals("LEASE_EXPIRED", recovered.currentStep());
+        assertTrue(recovered.error().contains("not re-executed"));
+        assertEquals(SupplyChainTaskState.RUNNING, recreatedTasks.findTask("task-running").orElseThrow().status());
+        List<SupplyChainTaskEvent> recoveredEvents = recreatedEvents.findByTaskId("task-stalled");
+        assertEquals(1, recoveredEvents.size());
+        assertEquals(SupplyChainEventType.TASK_FAILED, recoveredEvents.get(0).type());
+        assertEquals("LEASE", recoveredEvents.get(0).stage());
+
+        recovery.recoverExpiredTasks();
+        assertEquals(1, recreatedEvents.findByTaskId("task-stalled").size());
     }
 
     @Test
@@ -438,6 +471,25 @@ class SupplyChainMySqlPersistenceIT {
         assertTrue(events.findByTaskId("task-old").isEmpty());
         assertTrue(tasks.findTask("task-active").isPresent());
         assertEquals(1, events.findByTaskId("task-active").size());
+    }
+
+    @Test
+    void pruningKeepsExpiredTasksReferencedByDurableBusinessRecords() {
+        Instant old = Instant.now().minus(Duration.ofDays(2));
+        seedTask("task-referenced", "referenced", old);
+        tasks.update(new SupplyChainTaskStatus("task-referenced", SupplyChainTaskState.COMPLETED, "DONE", 0, null,
+                old));
+        proposals.save(new DecisionProposal("proposal-referenced", "task-referenced",
+                ProposalActionType.START_SANDBOX_EXECUTION, "先保留该任务", "plan-1", Map.of(), List.of("evidence"),
+                "hash-referenced", ProposalStatus.PENDING, old, old.plus(Duration.ofMinutes(30)), null, null, null));
+        seedTask("task-unreferenced", "unreferenced", old);
+        tasks.update(new SupplyChainTaskStatus("task-unreferenced", SupplyChainTaskState.COMPLETED, "DONE", 0,
+                null, old));
+
+        tasks.prune(Duration.ofHours(24), 0);
+
+        assertTrue(tasks.findTask("task-referenced").isPresent());
+        assertTrue(tasks.findTask("task-unreferenced").isEmpty());
     }
 
     @Test
@@ -588,6 +640,412 @@ class SupplyChainMySqlPersistenceIT {
     private static String tableEngine(String tableName) {
         return jdbc.queryForObject("SELECT ENGINE FROM information_schema.TABLES "
                 + "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?", String.class, tableName);
+    }
+
+    @Test
+    void cancellationAndEventCommitAtomicallyAndRepeatedCancelDoesNotDuplicateTheEvent() {
+        seedTask("cancel-my", "cancel me", Instant.now());
+        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+
+        Boolean changed = transaction.execute(status -> {
+            boolean cancelled = tasks.cancelIfActive("cancel-my");
+            if (cancelled) {
+                events.append("cancel-my", SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                        SupplyChainEventStatus.CANCELLED, Instant.now(), null, "task cancelled by user", null);
+            }
+            return cancelled;
+        });
+
+        assertTrue(changed);
+        assertEquals("CANCELLED", tasks.findTask("cancel-my").orElseThrow().status());
+        assertEquals(1, events.findByTaskId("cancel-my").size());
+        assertFalse(tasks.cancelIfActive("cancel-my"));
+        assertEquals(1, events.findByTaskId("cancel-my").size());
+    }
+
+    @Test
+    void cancelledTaskRollsBackWhenTheEventInsertCannotBeWritten() {
+        seedTask("cancel-rollback", "cancel rollback", Instant.now());
+        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        jdbc.execute("RENAME TABLE chainpilot_task_event TO chainpilot_task_event_cancel_backup");
+        try {
+            assertThrows(RuntimeException.class, () -> transaction.executeWithoutResult(status -> {
+                assertTrue(tasks.cancelIfActive("cancel-rollback"));
+                events.append("cancel-rollback", SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                        SupplyChainEventStatus.CANCELLED, Instant.now(), null, "task cancelled by user", null);
+            }));
+            assertEquals("ACCEPTED", tasks.findTask("cancel-rollback").orElseThrow().status());
+        }
+        finally {
+            jdbc.execute("RENAME TABLE chainpilot_task_event_cancel_backup TO chainpilot_task_event");
+        }
+    }
+
+    @Test
+    void completedTaskCannotBeCancelledOrTurnedIntoACancellationEvent() {
+        seedTask("completed-cancel", "completed", Instant.now());
+        saveReport("completed-cancel", Instant.now());
+        tasks.update(new SupplyChainTaskStatus("completed-cancel", SupplyChainTaskState.COMPLETED, "DONE", 0,
+                null, Instant.now()));
+
+        assertFalse(tasks.cancelIfActive("completed-cancel"));
+
+        assertEquals("COMPLETED", tasks.findTask("completed-cancel").orElseThrow().status());
+        assertTrue(events.findByTaskId("completed-cancel").isEmpty());
+    }
+
+    @Test
+    void concurrentEventWritesFromTwoMySqlRepositoryInstancesGetUniqueSequences() throws Exception {
+        seedTask("concurrent-events", "concurrent events", Instant.now());
+        SupplyChainEventRepository other = new SupplyChainEventRepository(jdbc);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<SupplyChainTaskEvent> first = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return events.append("concurrent-events", SupplyChainEventType.NODE_STARTED, "A",
+                        SupplyChainEventStatus.STARTED, Instant.now(), null, "first", null);
+            });
+            Future<SupplyChainTaskEvent> second = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return other.append("concurrent-events", SupplyChainEventType.NODE_STARTED, "B",
+                        SupplyChainEventStatus.STARTED, Instant.now(), null, "second", null);
+            });
+            start.countDown();
+            first.get(10, TimeUnit.SECONDS);
+            second.get(10, TimeUnit.SECONDS);
+        }
+        finally {
+            pool.shutdownNow();
+        }
+
+        List<SupplyChainTaskEvent> restored = events.findByTaskId("concurrent-events");
+        assertEquals(2, restored.size());
+        assertEquals(List.of(1, 2), restored.stream().map(SupplyChainTaskEvent::sequence).toList());
+    }
+
+    @Test
+    void independentTransactionsAppendingToTheSameTaskKeepContiguousSequences() throws Exception {
+        seedTask("tx-independent", "independent transactions", Instant.now());
+        events.append("tx-independent", SupplyChainEventType.TASK_QUEUED, "QUEUE",
+                SupplyChainEventStatus.QUEUED, Instant.now(), null, "queued", null);
+        TransactionTemplate firstTransaction = new TransactionTemplate(
+                new DataSourceTransactionManager(dataSource));
+        TransactionTemplate secondTransaction = new TransactionTemplate(
+                new DataSourceTransactionManager(dataSource));
+        SupplyChainEventRepository other = new SupplyChainEventRepository(jdbc);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<SupplyChainTaskEvent> first = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return firstTransaction.execute(status -> events.append("tx-independent",
+                        SupplyChainEventType.NODE_STARTED, "FIRST", SupplyChainEventStatus.STARTED,
+                        Instant.now(), null, "first transaction", null));
+            });
+            Future<SupplyChainTaskEvent> second = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return secondTransaction.execute(status -> other.append("tx-independent",
+                        SupplyChainEventType.NODE_STARTED, "SECOND", SupplyChainEventStatus.STARTED,
+                        Instant.now(), null, "second transaction", null));
+            });
+            start.countDown();
+            assertNotNull(first.get(10, TimeUnit.SECONDS));
+            assertNotNull(second.get(10, TimeUnit.SECONDS));
+        }
+        finally {
+            pool.shutdownNow();
+        }
+
+        List<SupplyChainTaskEvent> restored = events.findByTaskId("tx-independent");
+        assertEquals(List.of(1, 2, 3), restored.stream().map(SupplyChainTaskEvent::sequence).toList());
+        assertEquals(3, restored.stream().map(SupplyChainTaskEvent::eventId).distinct().count());
+    }
+
+    @Test
+    void cancellationTransactionAndConcurrentEventAppendKeepExactlyOneCancellationEvent() throws Exception {
+        seedTask("cancel-parallel", "cancel parallel", Instant.now());
+        events.append("cancel-parallel", SupplyChainEventType.TASK_STARTED, "WORKFLOW",
+                SupplyChainEventStatus.STARTED, Instant.now(), null, "started", null);
+        TransactionTemplate cancellation = new TransactionTemplate(
+                new DataSourceTransactionManager(dataSource));
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        boolean cancelWon;
+        try {
+            Future<Boolean> cancelled = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return cancellation.execute(status -> {
+                    boolean changed = tasks.cancelIfActive("cancel-parallel");
+                    if (changed) {
+                        events.append("cancel-parallel", SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                                SupplyChainEventStatus.CANCELLED, Instant.now(), null,
+                                "task cancelled by user", null);
+                    }
+                    return changed;
+                });
+            });
+            Future<SupplyChainTaskEvent> parallel = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return new SupplyChainEventRepository(jdbc).append("cancel-parallel",
+                        SupplyChainEventType.NODE_COMPLETED, "CONCURRENT", SupplyChainEventStatus.COMPLETED,
+                        Instant.now(), 1L, "concurrent", null);
+            });
+            start.countDown();
+            cancelWon = cancelled.get(10, TimeUnit.SECONDS);
+            assertNotNull(parallel.get(10, TimeUnit.SECONDS));
+        }
+        finally {
+            pool.shutdownNow();
+        }
+
+        assertTrue(cancelWon);
+        assertEquals(SupplyChainTaskState.CANCELLED, tasks.findTask("cancel-parallel").orElseThrow().status());
+        List<SupplyChainTaskEvent> restored = events.findByTaskId("cancel-parallel");
+        assertEquals(3, restored.size());
+        assertEquals(List.of(1, 2, 3), restored.stream().map(SupplyChainTaskEvent::sequence).toList());
+        assertEquals(1, restored.stream()
+            .filter(event -> SupplyChainEventType.TASK_CANCELLED.equals(event.type()))
+            .count());
+    }
+
+    @Test
+    void terminalRacePersistsExactlyOneTerminalEvent() throws Exception {
+        seedTask("terminal-events", "terminal events", Instant.now());
+        RiskAnalysisReport report = new RiskAnalysisReport("terminal-events", SupplyChainTaskState.COMPLETED,
+                "race report", List.of("查询订单"), false, List.of(), List.of(), List.of(), List.of(), false, 0,
+                Instant.now());
+        TransactionTemplate cancellation = new TransactionTemplate(
+                new DataSourceTransactionManager(dataSource));
+        TransactionTemplate completion = new TransactionTemplate(
+                new DataSourceTransactionManager(dataSource));
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        boolean cancelWon;
+        boolean completeWon;
+        try {
+            Future<Boolean> cancelled = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return cancellation.execute(status -> {
+                    boolean changed = tasks.cancelIfActive("terminal-events");
+                    if (changed) {
+                        events.append("terminal-events", SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                                SupplyChainEventStatus.CANCELLED, Instant.now(), null,
+                                "task cancelled by user", null);
+                    }
+                    return changed;
+                });
+            });
+            Future<Boolean> completed = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return completion.execute(status -> {
+                    boolean changed = tasks.completeAnalysis("terminal-events", report, "DONE", 0);
+                    if (changed) {
+                        events.append("terminal-events", SupplyChainEventType.TASK_COMPLETED, "WORKFLOW",
+                                SupplyChainEventStatus.COMPLETED, Instant.now(), 1L, "done", null);
+                    }
+                    return changed;
+                });
+            });
+            start.countDown();
+            cancelWon = cancelled.get(10, TimeUnit.SECONDS);
+            completeWon = completed.get(10, TimeUnit.SECONDS);
+        }
+        finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(1, (cancelWon ? 1 : 0) + (completeWon ? 1 : 0));
+        List<SupplyChainTaskEvent> restored = events.findByTaskId("terminal-events");
+        assertEquals(1, restored.size());
+        assertEquals(cancelWon ? SupplyChainEventType.TASK_CANCELLED : SupplyChainEventType.TASK_COMPLETED,
+                restored.get(0).type());
+        assertEquals(cancelWon ? SupplyChainTaskState.CANCELLED : SupplyChainTaskState.COMPLETED,
+                tasks.findTask("terminal-events").orElseThrow().status());
+    }
+
+    @Test
+    void cancelledTaskAndEventSurviveRepositoryRecreationWithoutRecoveryOverwrite() {
+        seedTask("cancel-restart", "cancel restart", Instant.now());
+        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        Boolean changed = transaction.execute(status -> {
+            boolean cancelled = tasks.cancelIfActive("cancel-restart");
+            if (cancelled) {
+                events.append("cancel-restart", SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                        SupplyChainEventStatus.CANCELLED, Instant.now(), null, "task cancelled by user", null);
+            }
+            return cancelled;
+        });
+        assertTrue(changed);
+
+        DriverManagerDataSource recreatedDataSource = new DriverManagerDataSource(jdbcUrl, username, password);
+        SupplyChainTaskRepository recreatedTasks = new SupplyChainTaskRepository(
+                new JdbcTemplate(recreatedDataSource), mapper());
+        SupplyChainEventRepository recreatedEvents = new SupplyChainEventRepository(
+                new JdbcTemplate(recreatedDataSource));
+
+        SupplyChainTaskStatus restored = recreatedTasks.findTask("cancel-restart").orElseThrow();
+        assertEquals(SupplyChainTaskState.CANCELLED, restored.status());
+        assertEquals("CANCELLED", restored.currentStep());
+        assertEquals(1, recreatedEvents.findByTaskId("cancel-restart").size());
+        assertEquals(SupplyChainEventType.TASK_CANCELLED,
+                recreatedEvents.findByTaskId("cancel-restart").get(0).type());
+    }
+
+    @Test
+    void cancellationAndCompletionCompeteForExactlyOneTerminalOutcome() throws Exception {
+        seedTask("terminal-race", "terminal race", Instant.now());
+        RiskAnalysisReport report = new RiskAnalysisReport("terminal-race", SupplyChainTaskState.COMPLETED,
+                "race report", List.of("查询订单"), false, List.of(), List.of(), List.of(), List.of(), false, 0,
+                Instant.now());
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        boolean cancelWon;
+        boolean completeWon;
+        try {
+            Future<Boolean> cancelled = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return tasks.cancelIfActive("terminal-race");
+            });
+            Future<Boolean> completed = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return tasks.completeAnalysis("terminal-race", report, "DONE", 0);
+            });
+            start.countDown();
+            cancelWon = cancelled.get(10, TimeUnit.SECONDS);
+            completeWon = completed.get(10, TimeUnit.SECONDS);
+        }
+        finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(1, (cancelWon ? 1 : 0) + (completeWon ? 1 : 0));
+        assertEquals(cancelWon ? SupplyChainTaskState.CANCELLED : SupplyChainTaskState.COMPLETED,
+                tasks.findTask("terminal-race").orElseThrow().status());
+    }
+
+    @Test
+    void eventAppendRetriesInsideARepeatableReadTransactionAfterAConcurrentCommit() throws Exception {
+        seedTask("tx-event-race", "tx event race", Instant.now());
+        events.append("tx-event-race", SupplyChainEventType.TASK_QUEUED, "QUEUE",
+                SupplyChainEventStatus.QUEUED, Instant.now(), null, "queued", null);
+        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        transaction.setIsolationLevel(Connection.TRANSACTION_REPEATABLE_READ);
+        CountDownLatch snapshotTaken = new CountDownLatch(1);
+        CountDownLatch concurrentCommitted = new CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<SupplyChainTaskEvent> concurrent = pool.submit(() -> {
+                assertTrue(snapshotTaken.await(10, TimeUnit.SECONDS));
+                SupplyChainTaskEvent appended = new SupplyChainEventRepository(jdbc).append("tx-event-race",
+                        SupplyChainEventType.NODE_STARTED, "CONCURRENT", SupplyChainEventStatus.STARTED,
+                        Instant.now(), null, "concurrent", null);
+                concurrentCommitted.countDown();
+                return appended;
+            });
+            transaction.executeWithoutResult(status -> {
+                tasks.findTask("tx-event-race").orElseThrow();
+                snapshotTaken.countDown();
+                try {
+                    assertTrue(concurrentCommitted.await(10, TimeUnit.SECONDS));
+                }
+                catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(exception);
+                }
+                events.append("tx-event-race", SupplyChainEventType.TASK_CANCELLED, "WORKFLOW",
+                        SupplyChainEventStatus.CANCELLED, Instant.now(), null, "cancelled in transaction", null);
+            });
+            concurrent.get(10, TimeUnit.SECONDS);
+        }
+        finally {
+            pool.shutdownNow();
+        }
+        List<SupplyChainTaskEvent> restored = events.findByTaskId("tx-event-race");
+        assertEquals(List.of(1, 2, 3), restored.stream().map(SupplyChainTaskEvent::sequence).toList());
+    }
+
+    @Test
+    void twoThreadsClaimingTheSameTaskLeaveExactlyOneOwner() throws Exception {
+        seedTask("claim-race-task", "race", Instant.now());
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch go = new CountDownLatch(1);
+        try {
+            Callable<Boolean> one = () -> {
+                go.await();
+                return tasks.claimTask("claim-race-task", "jvm-1", tasks.databaseNowMillis() + 600_000);
+            };
+            Callable<Boolean> two = () -> {
+                go.await();
+                return tasks.claimTask("claim-race-task", "jvm-2", tasks.databaseNowMillis() + 600_000);
+            };
+            Future<Boolean> first = pool.submit(one);
+            Future<Boolean> second = pool.submit(two);
+            go.countDown();
+
+            int winners = (first.get(30, TimeUnit.SECONDS) ? 1 : 0) + (second.get(30, TimeUnit.SECONDS) ? 1 : 0);
+
+            assertEquals(1, winners, "MySQL must let exactly one UPDATE claim the task row");
+            assertEquals(1L, taskFenceVersion("claim-race-task"));
+            assertNotNull(taskOwner("claim-race-task"));
+            assertFalse(tasks.claimTask("claim-race-task", "jvm-3", tasks.databaseNowMillis() + 600_000));
+        }
+        finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void taskLeasesAndTheEvaluationLockNeverShareState() {
+        jdbc.execute("CREATE TABLE IF NOT EXISTS chainpilot_evaluation_lock (lock_name VARCHAR(64) PRIMARY KEY, "
+                + "owner_instance_id VARCHAR(64), lease_expires_at BIGINT NOT NULL, fence_version BIGINT NOT NULL, "
+                + "run_id VARCHAR(36), updated_at BIGINT NOT NULL)");
+        jdbc.update("INSERT IGNORE INTO chainpilot_evaluation_lock (lock_name, owner_instance_id, "
+                + "lease_expires_at, fence_version, run_id, updated_at) VALUES ('AGENT_EVALUATION', NULL, 0, 0, "
+                + "NULL, ?)", System.currentTimeMillis());
+        seedTask("isolation-task", "isolation", Instant.now());
+        long dbNow = tasks.databaseNowMillis();
+        assertTrue(tasks.claimTask("isolation-task", "jvm-a", dbNow + 600_000));
+        long taskFence = taskFenceVersion("isolation-task");
+        long lockFence = evaluationLockFence();
+        try {
+            jdbc.update("UPDATE chainpilot_evaluation_lock SET owner_instance_id='jvm-eval', lease_expires_at=?, "
+                    + "run_id='eval-run', fence_version=fence_version+1, updated_at=? WHERE lock_name=?",
+                    dbNow + 600_000, dbNow, "AGENT_EVALUATION");
+
+            assertEquals(taskFence, taskFenceVersion("isolation-task"), "an evaluation lock write moved a task fence");
+            assertEquals("jvm-a", taskOwner("isolation-task"));
+            assertEquals(dbNow + 600_000, taskLeaseExpiry("isolation-task"));
+
+            assertTrue(tasks.renewTaskLease("isolation-task", "jvm-a", taskFence, dbNow + 900_000));
+            assertEquals(lockFence + 1, evaluationLockFence(), "a task renewal moved the evaluation lock fence");
+            assertEquals(dbNow + 900_000, taskLeaseExpiry("isolation-task"));
+            assertFalse(tasks.claimTask("isolation-task", "jvm-b", dbNow + 600_000));
+        }
+        finally {
+            jdbc.update("UPDATE chainpilot_evaluation_lock SET owner_instance_id=NULL, lease_expires_at=0, "
+                    + "run_id=NULL WHERE lock_name=?", "AGENT_EVALUATION");
+        }
+    }
+
+    private long taskFenceVersion(String taskId) {
+        return jdbc.queryForObject("SELECT fence_version FROM " + TASK_TABLE + " WHERE task_id=?",
+                Long.class, taskId);
+    }
+
+    private long taskLeaseExpiry(String taskId) {
+        return jdbc.queryForObject("SELECT lease_expires_at FROM " + TASK_TABLE + " WHERE task_id=?",
+                Long.class, taskId);
+    }
+
+    private String taskOwner(String taskId) {
+        return jdbc.queryForObject("SELECT owner_instance_id FROM " + TASK_TABLE + " WHERE task_id=?",
+                String.class, taskId);
+    }
+
+    private long evaluationLockFence() {
+        return jdbc.queryForObject("SELECT fence_version FROM chainpilot_evaluation_lock WHERE lock_name=?",
+                Long.class, "AGENT_EVALUATION");
     }
 
     private static void seedTask(String taskId, String question, Instant updatedAt) {

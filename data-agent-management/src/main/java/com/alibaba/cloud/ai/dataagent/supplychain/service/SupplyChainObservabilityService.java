@@ -327,7 +327,13 @@ public class SupplyChainObservabilityService {
         List<SupplyChainTaskEvent> failedEvents = task.events().stream()
                 .filter(event -> SupplyChainEventStatus.FAILED.equals(event.status()))
                 .toList();
-        if ("INTERRUPTED_BY_RESTART".equals(task.task().currentStep())) {
+        if ("LEASE_EXPIRED".equals(task.task().currentStep())) {
+            diagnostics.add(diagnostic("LEASE_EXPIRED", "WARNING", "任务租约已过期",
+                    "持有该任务的实例停止续约，后端按租约到期把任务标记为失败，没有重新执行 Graph。",
+                    "确认执行实例状态后重新提交任务；租约过期不代表任何阶段已经完成。", List.of()));
+        }
+        else if ("INTERRUPTED_BY_RESTART".equals(task.task().currentStep())) {
+            // Kept for rows written by releases that recovered every active task at startup.
             diagnostics.add(diagnostic("INTERRUPTED_BY_RESTART", "WARNING", "任务被重启中断",
                     "应用重启时任务仍在运行，后端将其标记为失败。", "重新提交任务；不要推断未执行阶段已经完成。",
                     List.of()));

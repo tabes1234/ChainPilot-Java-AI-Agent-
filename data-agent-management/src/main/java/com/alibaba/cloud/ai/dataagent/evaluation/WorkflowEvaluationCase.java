@@ -17,25 +17,33 @@ package com.alibaba.cloud.ai.dataagent.evaluation;
 
 import java.util.List;
 
-/** A real workflow case. The agent evaluation mode submits the question through the backend. */
+/**
+ * A real workflow case. The agent evaluation mode submits the question through the backend.
+ * {@code requiredAssertionIds} names the assertions the evaluation must actually execute; a
+ * declared assertion that was never produced fails the case instead of passing silently.
+ */
 public record WorkflowEvaluationCase(String id, String name, String scenario, String question, String taskMode,
-        String expectedBehavior, List<String> assertions, boolean embeddingRequired, boolean chatRequired) {
-
-    public WorkflowEvaluationCase(String id, String name, String scenario, String question, String taskMode,
-            String expectedBehavior, List<String> assertions) {
-        this(id, name, scenario, question, taskMode, expectedBehavior, assertions, false, true);
-    }
-
-    public WorkflowEvaluationCase(String id, String name, String scenario, String question, String taskMode,
-            String expectedBehavior, List<String> assertions, boolean embeddingRequired) {
-        this(id, name, scenario, question, taskMode, expectedBehavior, assertions, embeddingRequired, true);
-    }
+        String expectedBehavior, List<String> assertions, List<String> requiredAssertionIds,
+        boolean embeddingRequired, boolean chatRequired) {
 
     public WorkflowEvaluationCase {
         if (embeddingRequired && !chatRequired) {
             throw new IllegalArgumentException("需要 EMBEDDING 的工作流案例必须同时声明 CHAT 依赖");
         }
         assertions = assertions == null ? List.of() : List.copyOf(assertions);
+        if (requiredAssertionIds == null || requiredAssertionIds.isEmpty()) {
+            throw new IllegalArgumentException("工作流案例必须声明需要执行的断言: " + id);
+        }
+        requiredAssertionIds = List.copyOf(requiredAssertionIds);
+    }
+
+    public WorkflowEvaluationCase(String id, String name, String scenario, String question, String taskMode,
+            String expectedBehavior, List<String> assertions, List<String> requiredAssertionIds) {
+        this(id, name, scenario, question, taskMode, expectedBehavior, assertions, requiredAssertionIds, false, true);
+    }
+
+    public boolean requiresAssertion(String assertionId) {
+        return requiredAssertionIds.contains(assertionId);
     }
 
 }

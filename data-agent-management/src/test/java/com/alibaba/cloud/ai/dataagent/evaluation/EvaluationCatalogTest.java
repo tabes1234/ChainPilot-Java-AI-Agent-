@@ -81,6 +81,46 @@ class EvaluationCatalogTest {
     }
 
     @Test
+    void workflowCasesDeclareTheAssertionsTheyMustExecute() {
+        assertEquals(List.of("report-exists", "task-completed", "report-at-risk", "report-model-assisted",
+                "report-model-completed"),
+                catalog.workflowCase("WF-ANALYSIS-HIGH-RISK").orElseThrow().requiredAssertionIds());
+        assertTrue(catalog.workflowCase("WF-ANALYSIS-INVENTORY-SHORTAGE").orElseThrow()
+            .requiresAssertion("report-shortage"), "库存缺口案例必须真正执行缺口断言，否则只证明了报告存在");
+        assertFalse(catalog.workflowCase("WF-ANALYSIS-HIGH-RISK").orElseThrow().requiresAssertion("report-shortage"),
+                "未声明缺口的案例不得追加缺口断言");
+        assertTrue(catalog.workflowCase("WF-DECISION-COMPARE").orElseThrow().requiresAssertion("comparison-exists"));
+        assertTrue(catalog.workflowCase("WF-DECISION-UNSUPPORTED").orElseThrow()
+            .requiresAssertion("unsupported-or-clarify"));
+        assertTrue(catalog.workflowCase("WF-DECISION-EVIDENCE").orElseThrow().requiresAssertion("evidence"));
+        assertTrue(catalog.workflowCase("WF-DECISION-EVIDENCE").orElseThrow()
+            .requiredAssertionIds().stream().distinct().count() == catalog.workflowCase("WF-DECISION-EVIDENCE")
+                .orElseThrow().requiredAssertionIds().size(), "断言 ID 重复会让完整性检查失去意义");
+    }
+
+    @Test
+    void modelParticipationIsRequiredOnlyForCasesThatActuallyCallTheModel() {
+        assertTrue(catalog.workflowCase("WF-ANALYSIS-HIGH-RISK").orElseThrow()
+            .requiresAssertion("report-model-assisted"));
+        assertTrue(catalog.workflowCase("WF-ANALYSIS-INVENTORY-SHORTAGE").orElseThrow()
+            .requiresAssertion("report-model-completed"));
+        assertTrue(catalog.workflowCase("WF-DECISION-COMPARE").orElseThrow()
+            .requiresAssertion("decision-model-assisted"));
+        assertTrue(catalog.workflowCase("WF-DECISION-EVIDENCE").orElseThrow()
+            .requiresAssertion("decision-model-completed"));
+        // UNSUPPORTED 由确定性意图解析处理，设计上不调用模型；它不能用来证明模型可用，
+        // 也不应该因为缺少模型参与而被判失败。
+        assertFalse(catalog.workflowCase("WF-DECISION-UNSUPPORTED").orElseThrow()
+            .requiresAssertion("decision-model-assisted"));
+        assertFalse(catalog.find("REPORT-FALLBACK-NO-MODEL").orElseThrow()
+            .assertions().contains("报告由模型成功生成"), "降级案例的语义必须保持为验证降级本身");
+        // 离线案例与反馈案例不声明模型参与断言。
+        assertTrue(catalog.deterministicCases().stream()
+            .flatMap(definition -> definition.assertions().stream())
+            .noneMatch(assertion -> assertion.contains("模型成功生成")));
+    }
+
+    @Test
     void rejectsContradictoryOrOfflineModelDependenciesAndKeepsLegacyConstructorsSafe() {
         assertThrows(IllegalArgumentException.class, () -> new EvaluationCaseDefinition("BAD-OFFLINE", "bad", "bad",
                 "risk", "KIND", EvaluationMode.OFFLINE, "q", "expected", null, "1.0.0", true, "basis",
@@ -89,7 +129,10 @@ class EvaluationCatalogTest {
                 "workflow", "ANALYSIS", EvaluationMode.AGENT, "q", "expected", null, "workflow-1.0.0", true, "basis",
                 List.of("assertion"), true, false));
         assertThrows(IllegalArgumentException.class, () -> new WorkflowEvaluationCase("BAD-WORKFLOW", "bad", "bad",
-                "q", "ANALYSIS", "expected", List.of("assertion"), true, false));
+                "q", "ANALYSIS", "expected", List.of("assertion"), List.of("report-exists"), true, false));
+        assertThrows(IllegalArgumentException.class, () -> new WorkflowEvaluationCase("NO-ASSERTIONS", "bad", "bad",
+                "q", "ANALYSIS", "expected", List.of("assertion"), List.of(), false, true),
+                "a workflow case without declared assertions could never prove it executed");
 
         EvaluationCaseDefinition legacyOffline = new EvaluationCaseDefinition("LEGACY-OFFLINE", "legacy", "legacy",
                 "risk", "ORDER_RISK", EvaluationMode.OFFLINE, "q", "expected", null, "1.0.0", true, "basis",

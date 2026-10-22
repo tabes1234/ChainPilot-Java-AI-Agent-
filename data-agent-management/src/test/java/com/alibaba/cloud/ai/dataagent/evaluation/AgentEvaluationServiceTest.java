@@ -37,17 +37,26 @@ import com.alibaba.cloud.ai.dataagent.evaluation.feedback.FeedbackType;
 import com.alibaba.cloud.ai.dataagent.evaluation.repository.EvaluationRunRepository;
 import com.alibaba.cloud.ai.dataagent.evaluation.exception.AgentPrerequisiteException;
 import com.alibaba.cloud.ai.dataagent.evaluation.service.AgentEvaluationService;
+import com.alibaba.cloud.ai.dataagent.evaluation.service.EvaluationLeaseManager;
 import com.alibaba.cloud.ai.dataagent.evaluation.service.EvaluationMetricsCalculator;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelReadinessService;
 import com.alibaba.cloud.ai.dataagent.vo.ModelCheckVo;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.DecisionTaskResult;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.DisposalActionType;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.DisposalPriority;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.DisposalRecommendation;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.OrderRiskAssessment;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.OrderStatus;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskAnalysisReport;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskEvidence;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskLevel;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainEventStatus;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainEventType;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskEvent;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainOrder;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskStatus;
 import com.alibaba.cloud.ai.dataagent.supplychain.repository.SupplyChainDemoData;
+import com.alibaba.cloud.ai.dataagent.supplychain.service.InstanceIdentity;
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainKnowledgeService;
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainQueryService;
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainWorkflowService;
@@ -67,6 +76,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -77,12 +87,21 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AgentEvaluationServiceTest {
+
+    private static final long LEASE_TTL_MS = 600_000L;
+
+    private static final long MAX_HOLD_MS = 1_800_000L;
+
+    private static final String LOCK_TABLE = "chainpilot_evaluation_lock";
 
     private EvaluationCatalog catalog;
 
@@ -96,24 +115,47 @@ class AgentEvaluationServiceTest {
 
     private ModelReadinessService readinessService;
 
+    private JdbcTemplate jdbc;
+
+    private ObjectMapper mapper;
+
+    private SupplyChainQueryService queryService;
+
+    private SupplyChainKnowledgeService knowledgeService;
+
+    private EvaluationMetricsCalculator metricsCalculator;
+
+    private EvaluationLeaseManager lease;
+
     @BeforeEach
     void setUp() {
-        ObjectMapper mapper = new ObjectMapper();
+        mapper = new ObjectMapper();
         catalog = new EvaluationCatalog(new SupplyChainEvaluationDatasetLoader(mapper));
-        SupplyChainQueryService queryService = new SupplyChainQueryService(new SupplyChainDemoData());
+        queryService = new SupplyChainQueryService(new SupplyChainDemoData());
         ObjectProvider<VectorStore> noVectorStore = new StaticListableBeanFactory()
             .getBeanProvider(VectorStore.class);
-        SupplyChainKnowledgeService knowledgeService = new SupplyChainKnowledgeService(noVectorStore,
+        knowledgeService = new SupplyChainKnowledgeService(noVectorStore,
                 new PathMatchingResourcePatternResolver());
-        JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
+        jdbc = new JdbcTemplate(new DriverManagerDataSource(
                 "jdbc:h2:mem:evaluation-" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", ""));
         repository = new EvaluationRunRepository(jdbc, mapper);
         feedbackRepository = new FeedbackRepository(jdbc, mapper);
         workflow = mock(SupplyChainWorkflowService.class);
         readinessService = mock(ModelReadinessService.class);
         when(readinessService.readiness()).thenReturn(verifiedReadiness());
-        service = new AgentEvaluationService(catalog, queryService, knowledgeService, workflow, repository,
-                new EvaluationMetricsCalculator(mapper), mapper, feedbackRepository, readinessService);
+        metricsCalculator = new EvaluationMetricsCalculator(mapper);
+        lease = newLease("jvm-a");
+        service = newService(lease);
+    }
+
+    /** A second lease manager is a second JVM: same database, different instance identity. */
+    private EvaluationLeaseManager newLease(String instanceId) {
+        return new EvaluationLeaseManager(repository, new InstanceIdentity(instanceId), LEASE_TTL_MS, MAX_HOLD_MS);
+    }
+
+    private AgentEvaluationService newService(EvaluationLeaseManager manager) {
+        return new AgentEvaluationService(catalog, queryService, knowledgeService, workflow, repository,
+                metricsCalculator, mapper, feedbackRepository, readinessService, manager);
     }
 
     private static ModelCheckVo verifiedReadiness() {
@@ -263,6 +305,8 @@ class AgentEvaluationServiceTest {
         assertEquals(false, capabilities.get("embeddingRequiredForAgentEvaluation"));
         assertEquals(ModelReadinessService.STATE_NOT_CONFIGURED, capabilities.get("embeddingState"));
         assertEquals(true, capabilities.get("agentModeBlocksUnreadyStart"));
+        assertEquals("DATABASE_LEASE", capabilities.get("agentRunLockScope"));
+        assertEquals(false, capabilities.get("agentRunActive"));
         assertEquals(ModelReadinessService.VERIFICATION_SCOPE, capabilities.get("modelVerificationScope"));
         assertEquals(List.of(), capabilities.get("agentCasesRequiringEmbedding"));
         assertEquals(6, ((List<?>) capabilities.get("agentCasesRequiringChat")).size());
@@ -324,6 +368,7 @@ class AgentEvaluationServiceTest {
         when(workflow.task("task-1"))
             .thenReturn(new SupplyChainTaskStatus("task-1", "COMPLETED", "REPORT", 1, null, Instant.now()));
         when(workflow.report("task-1")).thenReturn(report());
+        when(workflow.events("task-1")).thenReturn(modelCompletedEvents("task-1", "GENERATING_REPORT"));
 
         EvaluationRun completed = service.getRun(running.runId());
         assertEquals(EvaluationRunStatus.COMPLETED, completed.status());
@@ -376,6 +421,7 @@ class AgentEvaluationServiceTest {
         assertEquals(EvaluationRunStatus.COMPLETED, run.status());
         assertEquals(1, run.failed());
         assertEquals("SUBMIT_FAILED", run.results().get(0).failureType());
+        assertFalse(repository.isEvaluationLockHeld(), "提交异常不得留下永久锁");
     }
 
     @Test
@@ -413,22 +459,167 @@ class AgentEvaluationServiceTest {
     }
 
     @Test
-    void startupRecoveryClosesAnInterruptedRunningRun() {
-        EvaluationCaseResult runningCase = new EvaluationCaseResult("WF-ANALYSIS-HIGH-RISK", "高风险订单分析",
-                "真实工作流：高风险订单分析", "workflow", EvaluationCaseStatus.RUNNING, 0, "task-lost",
-                List.of(), "{}", null, null, "workflow-1.0.0", "ANALYSIS");
-        EvaluationRun running = new EvaluationRun("run-interrupted", "workflow-1.0.0", EvaluationMode.AGENT,
-                EvaluationRunStatus.RUNNING, "TEST", Instant.now().minusSeconds(60), null, 1, 0, 0, 0, null,
-                Map.of(), List.of(runningCase));
-        repository.save(running);
+    void expiredLeaseRecoveryClosesOnlyTheRunItsOwnerStoppedRenewing() {
+        saveRunningAgentRun("run-expired", "task-lost");
+        assertTrue(newLease("jvm-dead").claim("run-expired"));
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET lease_expires_at=1 WHERE lock_name='AGENT_EVALUATION'");
 
-        service.recoverInterruptedRuns();
+        newLease("jvm-rescuer").recoverOnStartup();
 
-        EvaluationRun recovered = repository.find("run-interrupted").orElseThrow();
+        EvaluationRun recovered = repository.find("run-expired").orElseThrow();
         assertEquals(EvaluationRunStatus.FAILED, recovered.status());
         assertNotNull(recovered.failureReason());
         assertEquals(EvaluationCaseStatus.UNDETERMINED, recovered.results().get(0).status());
         assertEquals("INTERRUPTED", recovered.results().get(0).failureType());
+        assertFalse(repository.isEvaluationLockHeld());
+    }
+
+    @Test
+    void startupDoesNotCloseARunAnotherInstanceStillOwns() {
+        saveRunningAgentRun("run-live", "task-live");
+        assertTrue(newLease("jvm-live").claim("run-live"));
+
+        EvaluationLeaseManager newcomer = newLease("jvm-new");
+        newcomer.recoverOnStartup();
+
+        assertEquals(EvaluationRunStatus.RUNNING, repository.find("run-live").orElseThrow().status());
+        assertFalse(newcomer.claim("run-live"));
+        assertFalse(newcomer.claim("run-other"));
+        assertEquals("jvm-live", lockOwner());
+    }
+
+    @Test
+    void rejectedInstanceSubmitsNoTasksAndKeepsNoLease() {
+        EvaluationRun running = startRunningAgentRun("task-1");
+        assertTrue(lease.ownsRun(running.runId()));
+
+        EvaluationLeaseManager leaseB = newLease("jvm-b");
+        AgentEvaluationService other = newService(leaseB);
+        ResponseStatusException conflict = assertThrows(ResponseStatusException.class,
+                () -> other.start(EvaluationMode.AGENT, List.of("WF-DECISION-COMPARE"), true));
+
+        assertEquals(HttpStatus.CONFLICT, conflict.getStatusCode());
+        assertNull(leaseB.activeRunId());
+        verify(workflow, times(1)).submit(anyString(), anyString());
+    }
+
+    @Test
+    void terminalRunReleasesTheLeaseSoTheNextRunCanStart() {
+        EvaluationRun running = startRunningAgentRun("task-rel");
+        assertTrue(repository.isEvaluationLockHeld());
+
+        when(workflow.task("task-rel"))
+            .thenReturn(new SupplyChainTaskStatus("task-rel", "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report("task-rel")).thenReturn(report());
+        when(workflow.events("task-rel")).thenReturn(modelCompletedEvents("task-rel", "GENERATING_REPORT"));
+
+        EvaluationRun completed = service.getRun(running.runId());
+
+        assertEquals(EvaluationRunStatus.COMPLETED, completed.status());
+        assertFalse(lease.ownsRun(running.runId()));
+        assertFalse(repository.isEvaluationLockHeld());
+    }
+
+    @Test
+    void cancelledTaskClosesTheRunAndReleasesTheLease() {
+        EvaluationRun running = startRunningAgentRun("task-cancel");
+        when(workflow.task("task-cancel"))
+            .thenReturn(new SupplyChainTaskStatus("task-cancel", "CANCELLED", "CANCELLED", 0, "Cancelled by user",
+                    Instant.now()));
+
+        EvaluationRun closed = service.getRun(running.runId());
+
+        assertEquals(EvaluationRunStatus.FAILED, closed.status());
+        assertEquals(EvaluationCaseStatus.UNDETERMINED, closed.results().get(0).status());
+        assertEquals("TASK_CANCELLED", closed.results().get(0).failureType());
+        assertNotNull(closed.failureReason());
+        assertFalse(repository.isEvaluationLockHeld());
+    }
+
+    @Test
+    void renewalExtendsTheLeaseAndKeepsTheOwnerWriting() {
+        EvaluationRun running = startRunningAgentRun("task-renew");
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET lease_expires_at=1 WHERE lock_name='AGENT_EVALUATION'");
+
+        assertTrue(lease.renew());
+        Long expiresAt = jdbc.queryForObject("SELECT lease_expires_at FROM " + LOCK_TABLE
+                + " WHERE lock_name='AGENT_EVALUATION'", Long.class);
+        assertTrue(expiresAt > repository.databaseNowMillis());
+        assertEquals(EvaluationRunStatus.RUNNING, service.getRun(running.runId()).status());
+        assertTrue(repository.isEvaluationLockHeld());
+    }
+
+    @Test
+    void formerOwnerCannotAdvanceTheRunAfterAnotherInstanceTakesTheLease() {
+        saveRunningAgentRun("run-taken", "task-taken");
+        assertTrue(lease.claim("run-taken"));
+        long lostFence = lease.activeFence();
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET owner_instance_id='jvm-b', fence_version=fence_version+1, "
+                + "lease_expires_at=? WHERE lock_name='AGENT_EVALUATION'", repository.databaseNowMillis() + 600_000L);
+
+        assertFalse(lease.renew());
+        EvaluationRun refreshed = service.getRun("run-taken");
+
+        assertEquals("run-taken", refreshed.runId());
+        assertEquals(EvaluationRunStatus.RUNNING, repository.find("run-taken").orElseThrow().status());
+        assertFalse(repository.saveOwned(repository.find("run-taken").orElseThrow(), lease.ownerId(), lostFence));
+        assertEquals("jvm-b", lockOwner());
+        verify(workflow, never()).task(anyString());
+    }
+
+    @Test
+    void aTerminalSnapshotReleasesTheLeaseInTheSameWrite() {
+        saveRunningAgentRun("run-terminal", "task-terminal");
+        assertTrue(lease.claim("run-terminal"));
+        EvaluationRun persisted = repository.find("run-terminal").orElseThrow();
+        EvaluationRun terminal = new EvaluationRun(persisted.runId(), persisted.datasetVersion(), persisted.mode(),
+                EvaluationRunStatus.COMPLETED, persisted.environment(), persisted.startedAt(), Instant.now(),
+                persisted.totalCases(), persisted.passed(), persisted.failed(), persisted.undetermined(), 1L,
+                Map.of(), persisted.results(), null);
+
+        assertTrue(repository.saveOwned(terminal, lease.ownerId(), lease.activeFence()));
+
+        assertFalse(repository.isEvaluationLockHeld());
+        assertEquals(EvaluationRunStatus.COMPLETED, repository.find("run-terminal").orElseThrow().status());
+    }
+
+    @Test
+    void expiryClosesTheRunAndFreesTheLockInOneStep() {
+        saveRunningAgentRun("run-atomic", "task-atomic");
+        assertTrue(lease.claim("run-atomic"));
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET lease_expires_at=1 WHERE lock_name='AGENT_EVALUATION'");
+
+        assertEquals("run-atomic",
+                repository.expireRunAndMarkInterrupted(repository.databaseNowMillis(), "test expiry").orElseThrow());
+
+        EvaluationRun closed = repository.find("run-atomic").orElseThrow();
+        assertEquals(EvaluationRunStatus.FAILED, closed.status());
+        assertEquals("test expiry", closed.failureReason());
+        assertEquals(EvaluationCaseStatus.UNDETERMINED, closed.results().get(0).status());
+        assertFalse(repository.isEvaluationLockHeld());
+        assertTrue(repository.expireRunAndMarkInterrupted(repository.databaseNowMillis(), "again").isEmpty());
+    }
+
+    private void saveRunningAgentRun(String runId, String taskId) {
+        EvaluationCaseResult runningCase = new EvaluationCaseResult("WF-ANALYSIS-HIGH-RISK", "高风险订单分析",
+                "真实工作流：高风险订单分析", "workflow", EvaluationCaseStatus.RUNNING, 0, taskId,
+                List.of(), "{}", null, null, "workflow-1.0.0", "ANALYSIS");
+        repository.save(new EvaluationRun(runId, "workflow-1.0.0", EvaluationMode.AGENT,
+                EvaluationRunStatus.RUNNING, "TEST", Instant.now().minusSeconds(60), null, 1, 0, 0, 0, null,
+                Map.of(), List.of(runningCase)));
+    }
+
+    private EvaluationRun startRunningAgentRun(String taskId) {
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "RUNNING", "PLANNING", 0, null, Instant.now()));
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "RUNNING", "PLANNING", 0, null, Instant.now()));
+        return service.start(EvaluationMode.AGENT, List.of("WF-ANALYSIS-HIGH-RISK"), true);
+    }
+
+    private String lockOwner() {
+        return jdbc.queryForObject("SELECT owner_instance_id FROM " + LOCK_TABLE
+                + " WHERE lock_name='AGENT_EVALUATION'", String.class);
     }
 
     @Test
@@ -448,13 +639,373 @@ class AgentEvaluationServiceTest {
         assertEquals("DECISION", run.results().get(1).taskMode());
     }
 
+    @Test
+    void inventoryShortageCaseEvaluatesTheShortageAssertionAgainstRealEvidence() {
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus("task-short", "RUNNING", "PLANNING", 0, null, Instant.now()));
+        when(workflow.task("task-short"))
+            .thenReturn(new SupplyChainTaskStatus("task-short", "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report("task-short")).thenReturn(reportWithShortage("task-short", 80, 0));
+        when(workflow.events("task-short")).thenReturn(modelCompletedEvents("task-short", "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-INVENTORY-SHORTAGE"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.PASSED, result.status(),
+                () -> "expected the declared shortage assertion to pass, got " + result.failureType()
+                        + " / " + result.failureMessage());
+        EvaluationAssertionResult shortage = assertion(result, "report-shortage");
+        assertTrue(shortage.passed(), "the report really carries an inventory gap for ORD-1001");
+        assertEquals("1", shortage.actual(), "only the order with a positive shortage may count");
+    }
+
+    @Test
+    void inventoryShortageCaseFailsWhenTheReportHasNoRealGap() {
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus("task-nogap", "RUNNING", "PLANNING", 0, null, Instant.now()));
+        when(workflow.task("task-nogap"))
+            .thenReturn(new SupplyChainTaskStatus("task-nogap", "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report("task-nogap")).thenReturn(reportWithShortage("task-nogap", 0, 0));
+        when(workflow.events("task-nogap")).thenReturn(modelCompletedEvents("task-nogap", "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-INVENTORY-SHORTAGE"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.FAILED, result.status(),
+                "a shortage case without a real gap must not be counted as passed");
+        assertEquals("ASSERTION_MISMATCH", result.failureType());
+        assertTrue(result.failureMessage().contains("库存缺口"), () -> "got " + result.failureMessage());
+        assertFalse(assertion(result, "report-shortage").passed());
+        assertEquals(List.of("report-shortage"), result.assertions().stream()
+            .filter(assertion -> !assertion.passed())
+            .map(EvaluationAssertionResult::id)
+            .toList(), "model participation passed, so the only failure may be the missing gap");
+    }
+
+    @Test
+    void highRiskCaseDoesNotEvaluateTheInventoryShortageAssertion() {
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus("task-risk", "RUNNING", "PLANNING", 0, null, Instant.now()));
+        when(workflow.task("task-risk"))
+            .thenReturn(new SupplyChainTaskStatus("task-risk", "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report("task-risk")).thenReturn(reportWithShortage("task-risk", 80, 0));
+        when(workflow.events("task-risk")).thenReturn(modelCompletedEvents("task-risk", "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        // Assertions are bound to the case that declares them, not to the report content: a shortage
+        // present in the data must not add an assertion the high-risk case never promised.
+        assertEquals(EvaluationCaseStatus.PASSED, result.status());
+        assertTrue(findAssertion(result, "report-shortage").isEmpty(),
+                () -> "unexpected assertion: " + result.assertions().stream()
+                    .map(EvaluationAssertionResult::id).toList());
+    }
+
+    @Test
+    void missingReportEvidenceIsNotCountedAsPassed() {
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus("task-noreport", "RUNNING", "PLANNING", 0, null, Instant.now()));
+        when(workflow.task("task-noreport"))
+            .thenReturn(new SupplyChainTaskStatus("task-noreport", "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report("task-noreport")).thenReturn(null);
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-INVENTORY-SHORTAGE"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertNotEquals(EvaluationCaseStatus.PASSED, result.status(),
+                "absent evidence may never be recorded as a pass");
+        assertEquals("REPORT_MISSING", result.failureType());
+        assertEquals(1, run.failed());
+    }
+
+    @Test
+    void declaredAssertionThatNeverRunsFailsTheCaseInsteadOfPassingSilently() {
+        EvaluationCatalog drifting = spy(catalog);
+        WorkflowEvaluationCase declared = catalog.workflowCase("WF-ANALYSIS-HIGH-RISK").orElseThrow();
+        doReturn(Optional.of(new WorkflowEvaluationCase(declared.id(), declared.name(), declared.scenario(),
+                declared.question(), declared.taskMode(), declared.expectedBehavior(), declared.assertions(),
+                List.of("report-exists", "task-completed", "report-at-risk", "never-produced")))).when(drifting)
+            .workflowCase("WF-ANALYSIS-HIGH-RISK");
+        AgentEvaluationService driftService = new AgentEvaluationService(drifting, queryService, knowledgeService,
+                workflow, repository, metricsCalculator, mapper, feedbackRepository, readinessService,
+                newLease("jvm-drift"));
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus("task-drift", "RUNNING", "PLANNING", 0, null, Instant.now()));
+        when(workflow.task("task-drift"))
+            .thenReturn(new SupplyChainTaskStatus("task-drift", "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report("task-drift")).thenReturn(reportWithShortage("task-drift", 80, 0));
+        when(workflow.events("task-drift")).thenReturn(modelCompletedEvents("task-drift", "GENERATING_REPORT"));
+
+        EvaluationRun run = driftService.getRun(driftService.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        // This is the regression the round-39 audit found: a declared assertion that no code path
+        // produces used to leave the case PASSED.
+        assertEquals(EvaluationCaseStatus.FAILED, result.status());
+        assertEquals("ASSERTION_NOT_EVALUATED", result.failureType());
+        assertTrue(result.failureMessage().contains("never-produced"), () -> "got " + result.failureMessage());
+    }
+
+    /** Scenario 1: a genuinely model-assisted analysis run satisfies the participation assertions. */
+    @Test
+    void realModelAnalysisCasePassesOnlyWithSuccessfulModelParticipation() {
+        String taskId = startRunningTask("task-pass");
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report(taskId)).thenReturn(reportWithShortage(taskId, 80, 0));
+        when(workflow.events(taskId)).thenReturn(modelCompletedEvents(taskId, "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.PASSED, result.status(),
+                () -> "expected a pass, got " + result.failureType() + " / " + result.failureMessage());
+        assertTrue(assertion(result, "report-model-assisted").passed());
+        assertTrue(assertion(result, "report-model-completed").passed());
+        assertEquals(1, run.passed());
+    }
+
+    /** Scenario 2: task COMPLETED through deterministic degradation must not pass the model case. */
+    @Test
+    void degradedModelRunCannotPassTheRealModelAnalysisCase() {
+        String taskId = startRunningTask("task-degraded");
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report(taskId)).thenReturn(reportWithShortage(taskId, 80, 0, false));
+        when(workflow.events(taskId)).thenReturn(degradedModelEvents(taskId, "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals("COMPLETED", workflow.task(taskId).status(),
+                "the business layer still completes with the deterministic report");
+        assertEquals(EvaluationCaseStatus.FAILED, result.status(),
+                "a degraded run may never be recorded as real-model acceptance");
+        assertEquals("ASSERTION_MISMATCH", result.failureType());
+        assertTrue(result.failureMessage().contains("报告由模型成功生成"), () -> "got " + result.failureMessage());
+        assertEquals(List.of("report-model-assisted", "report-model-completed"), result.assertions().stream()
+            .filter(assertion -> !assertion.passed())
+            .map(EvaluationAssertionResult::id)
+            .toList(), "the business assertions must still pass, only model participation may fail");
+    }
+
+    /** Scenario 2 for the decision route: grounded narrative missing means the case cannot pass. */
+    @Test
+    void degradedDecisionRunCannotPassTheRealModelDecisionCase() {
+        String taskId = startRunningTask("task-decision-degraded");
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "COMPLETED", "DONE", 1, null, Instant.now()));
+        when(workflow.decision(taskId)).thenReturn(decision(taskId, false, true));
+        when(workflow.events(taskId)).thenReturn(degradedModelEvents(taskId, "DECISION_SUMMARY"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-DECISION-EVIDENCE"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.FAILED, result.status());
+        assertFalse(assertion(result, "decision-model-assisted").passed());
+        assertFalse(assertion(result, "decision-model-completed").passed());
+        assertTrue(assertion(result, "recommendations").passed(), "the deterministic advice is still usable");
+        assertTrue(assertion(result, "evidence").passed());
+        assertTrue(assertion(result, "real-data-mutated").passed());
+    }
+
+    /** Scenario 3: only MODEL_STARTED, or a late ignored response, is not model participation. */
+    @Test
+    void lateOrIncompleteModelEvidenceDoesNotCountAsParticipation() {
+        String taskId = startRunningTask("task-late");
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report(taskId)).thenReturn(reportWithShortage(taskId, 80, 0));
+        when(workflow.events(taskId)).thenReturn(lateCancelledEvents(taskId, "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.FAILED, result.status(),
+                "a model completion that arrived after the task was terminal was ignored, not applied");
+        assertEquals(List.of("report-model-completed"), result.assertions().stream()
+            .filter(assertion -> !assertion.passed())
+            .map(EvaluationAssertionResult::id)
+            .toList());
+    }
+
+    /** Scenario 4: model participation alone cannot rescue a broken business contract. */
+    @Test
+    void modelParticipationCannotCompensateForABrokenBusinessContract() {
+        String taskId = startRunningTask("task-contract");
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report(taskId)).thenReturn(modelAssistedEmptyReport(taskId));
+        when(workflow.events(taskId)).thenReturn(modelCompletedEvents(taskId, "GENERATING_REPORT"));
+
+        EvaluationRun run = service.getRun(service.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.FAILED, result.status());
+        assertTrue(assertion(result, "report-model-assisted").passed());
+        assertTrue(assertion(result, "report-model-completed").passed());
+        assertEquals(List.of("report-at-risk"), result.assertions().stream()
+            .filter(assertion -> !assertion.passed())
+            .map(EvaluationAssertionResult::id)
+            .toList(), "the business contract is what must fail here");
+    }
+
+    /** Scenario 5: OFFLINE cases keep their deterministic semantics and ask for no model. */
+    @Test
+    void offlineCasesStillRunDeterministicallyAndRequireNoModelParticipation() {
+        List<String> caseIds = service.cases()
+            .stream()
+            .filter(definition -> definition.mode() == EvaluationMode.OFFLINE)
+            .map(EvaluationCaseDefinition::id)
+            .toList();
+
+        EvaluationRun run = service.start(EvaluationMode.OFFLINE, caseIds, false);
+
+        assertEquals(14, run.totalCases());
+        assertEquals(14, run.passed());
+        assertTrue(run.results()
+            .stream()
+            .flatMap(result -> result.assertions().stream())
+            .map(EvaluationAssertionResult::id)
+            .noneMatch(id -> id.equals("report-model-assisted") || id.equals("report-model-completed")
+                    || id.equals("decision-model-assisted") || id.equals("decision-model-completed")),
+                "deterministic evaluation must not start demanding model participation");
+        verify(workflow, never()).submit(anyString(), anyString());
+    }
+
+    /** Scenario 6: a declared participation assertion that no code path produces must be reported. */
+    @Test
+    void declaredParticipationAssertionThatNeverRunsIsReportedAsMissing() {
+        EvaluationCatalog drifting = spy(catalog);
+        WorkflowEvaluationCase declared = catalog.workflowCase("WF-ANALYSIS-HIGH-RISK").orElseThrow();
+        doReturn(Optional.of(new WorkflowEvaluationCase(declared.id(), declared.name(), declared.scenario(),
+                declared.question(), declared.taskMode(), declared.expectedBehavior(), declared.assertions(),
+                java.util.stream.Stream.concat(declared.requiredAssertionIds().stream(),
+                        java.util.stream.Stream.of("decision-model-completed")).toList()))).when(drifting)
+            .workflowCase("WF-ANALYSIS-HIGH-RISK");
+        AgentEvaluationService driftService = new AgentEvaluationService(drifting, queryService, knowledgeService,
+                workflow, repository, metricsCalculator, mapper, feedbackRepository, readinessService,
+                newLease("jvm-drift-2"));
+        String taskId = startRunningTask("task-drift-2");
+        when(workflow.task(taskId))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "COMPLETED", "REPORT", 1, null, Instant.now()));
+        when(workflow.report(taskId)).thenReturn(reportWithShortage(taskId, 80, 0));
+        when(workflow.events(taskId)).thenReturn(modelCompletedEvents(taskId, "GENERATING_REPORT"));
+
+        EvaluationRun run = driftService.getRun(driftService.start(EvaluationMode.AGENT,
+                List.of("WF-ANALYSIS-HIGH-RISK"), true).runId());
+        EvaluationCaseResult result = run.results().get(0);
+
+        assertEquals(EvaluationCaseStatus.FAILED, result.status());
+        assertEquals("ASSERTION_NOT_EVALUATED", result.failureType());
+        assertTrue(result.failureMessage().contains("decision-model-completed"),
+                () -> "got " + result.failureMessage());
+    }
+
+    private String startRunningTask(String taskId) {
+        when(workflow.submit(anyString(), anyString()))
+            .thenReturn(new SupplyChainTaskStatus(taskId, "RUNNING", "PLANNING", 0, null, Instant.now()));
+        return taskId;
+    }
+
+    private static RiskAnalysisReport modelAssistedEmptyReport(String taskId) {
+        return new RiskAnalysisReport(taskId, "COMPLETED", "没有风险订单", List.of("查询订单风险"), true, List.of(),
+                List.of("确认恢复日期"), List.of(), List.of(), true, 1, Instant.now(), null,
+                RiskAnalysisReport.NARRATIVE_MODEL_VERIFIED);
+    }
+
+    private static EvaluationAssertionResult assertion(EvaluationCaseResult result, String id) {
+        return findAssertion(result, id).orElseThrow(
+                () -> new AssertionError("断言 " + id + " 未执行，实际执行了 " + result.assertions().stream()
+                    .map(EvaluationAssertionResult::id).toList()));
+    }
+
+    private static Optional<EvaluationAssertionResult> findAssertion(EvaluationCaseResult result, String id) {
+        return result.assertions().stream().filter(assertion -> id.equals(assertion.id())).findFirst();
+    }
+
+    private static RiskAnalysisReport reportWithShortage(String taskId, int firstShortage, int secondShortage) {
+        return reportWithShortage(taskId, firstShortage, secondShortage, true);
+    }
+
+    private static RiskAnalysisReport reportWithShortage(String taskId, int firstShortage, int secondShortage,
+            boolean modelAssisted) {
+        SupplyChainOrder first = new SupplyChainOrder("ORD-1001", "SKU-MCU-001", 120, "SUP-ALPHA",
+                LocalDate.now().plusDays(2), LocalDate.now().plusDays(5), OrderStatus.IN_TRANSIT);
+        SupplyChainOrder second = new SupplyChainOrder("ORD-1002", "SKU-SENSOR-002", 60, "SUP-BETA",
+                LocalDate.now().plusDays(1), LocalDate.now().plusDays(4), OrderStatus.CONFIRMED);
+        return new RiskAnalysisReport(taskId, "COMPLETED", "存在 2 个风险订单", List.of(), true,
+                List.of(new OrderRiskAssessment(first, RiskLevel.HIGH, 100, firstShortage, List.of("延期中"),
+                        List.of("确认恢复日期")),
+                        new OrderRiskAssessment(second, RiskLevel.MEDIUM, 60, secondShortage, List.of("交付风险"),
+                                List.of("催交"))),
+                List.of("确认供应商恢复日期"), List.of(), List.of(), modelAssisted, 1, Instant.now(), null,
+                modelAssisted ? RiskAnalysisReport.NARRATIVE_MODEL_VERIFIED
+                        : RiskAnalysisReport.NARRATIVE_DETERMINISTIC_FALLBACK);
+    }
+
+    /** The event trail of a model stage that really succeeded. */
+    private static List<SupplyChainTaskEvent> modelCompletedEvents(String taskId, String stage) {
+        return List.of(new SupplyChainTaskEvent("ev-start", taskId, 1, SupplyChainEventType.MODEL_STARTED, stage,
+                SupplyChainEventStatus.STARTED, Instant.now(), null, "model call started", null),
+                new SupplyChainTaskEvent("ev-done", taskId, 2, SupplyChainEventType.MODEL_COMPLETED, stage,
+                        SupplyChainEventStatus.COMPLETED, Instant.now(), 1200L,
+                        "model narrative accepted; reasons=3", null));
+    }
+
+    /** A budget abort or provider failure: the stage started, never completed, and degraded. */
+    private static List<SupplyChainTaskEvent> degradedModelEvents(String taskId, String stage) {
+        return List.of(new SupplyChainTaskEvent("ev-start", taskId, 1, SupplyChainEventType.MODEL_STARTED, stage,
+                SupplyChainEventStatus.STARTED, Instant.now(), null, "model call started", null),
+                new SupplyChainTaskEvent("ev-failed", taskId, 2, SupplyChainEventType.MODEL_FAILED, stage,
+                        SupplyChainEventStatus.FAILED, Instant.now(), 50L, "model call failed",
+                        "IllegalStateException"),
+                new SupplyChainTaskEvent("ev-fallback", taskId, 3, SupplyChainEventType.FALLBACK_USED, stage,
+                        SupplyChainEventStatus.FALLBACK, Instant.now(), 0L, "reason=IllegalStateException", null));
+    }
+
+    /** A response that landed after the task was already terminal: recorded, but marked CANCELLED. */
+    private static List<SupplyChainTaskEvent> lateCancelledEvents(String taskId, String stage) {
+        return List.of(new SupplyChainTaskEvent("ev-start", taskId, 1, SupplyChainEventType.MODEL_STARTED, stage,
+                SupplyChainEventStatus.STARTED, Instant.now(), null, "model call started", null),
+                new SupplyChainTaskEvent("ev-late", taskId, 2, SupplyChainEventType.MODEL_COMPLETED, stage,
+                        SupplyChainEventStatus.CANCELLED, Instant.now(), 9000L,
+                        "late response ignored; the task already reached a terminal state; rawOutcome=ok", null));
+    }
+
+    private static DecisionTaskResult decision(String taskId, boolean modelAssisted, boolean fallbackUsed) {
+        Instant now = Instant.now();
+        DisposalRecommendation recommendation = new DisposalRecommendation("rec-eval-1",
+                DisposalActionType.REPLENISH_INVENTORY, DisposalPriority.P1, 90, "高风险订单", RiskLevel.HIGH,
+                "SKU-MCU-001", "SUP-ALPHA", List.of("ORD-1001"), "紧急补货", "补货 100 件", "高风险订单需要补货",
+                List.of("缺货 40 件"), "降低风险", List.of("供应商可到货"), List.of("成本待确认"), List.of(),
+                List.of("假设订单未取消"), "PENDING", now);
+        return new DecisionTaskResult(taskId, "针对当前高风险订单生成处置建议", "DISPOSAL_RECOMMENDATIONS", "COMPLETED",
+                "建议补货 100 件。", modelAssisted ? "MODEL_GROUNDED" : "DETERMINISTIC_FALLBACK", modelAssisted,
+                fallbackUsed, false, List.of(), List.of("findAtRiskOrders"), List.of("查询风险订单"), true, List.of(),
+                List.of(), List.of(recommendation), null, null, null, null, null, List.of(), List.of(),
+                List.of("确定性证据：缺货 40 件"), false, now);
+    }
+
     private static RiskAnalysisReport report() {
         SupplyChainOrder order = new SupplyChainOrder("ORD-1001", "SKU-MCU-001", 120, "SUP-ALPHA",
                 LocalDate.now().plusDays(2), LocalDate.now().plusDays(5), OrderStatus.IN_TRANSIT);
         OrderRiskAssessment assessment = new OrderRiskAssessment(order, RiskLevel.HIGH, 100, 100,
                 List.of("延期中"), List.of("确认恢复日期"));
         return new RiskAnalysisReport("task-1", "COMPLETED", "存在 1 个风险订单", List.of(), true,
-                List.of(assessment), List.of("确认供应商恢复日期"), List.of(), List.of(), false, 1, Instant.now());
+                List.of(assessment), List.of("确认供应商恢复日期"), List.of(), List.of(), true, 1, Instant.now(), null,
+                RiskAnalysisReport.NARRATIVE_MODEL_VERIFIED);
     }
 
     private static RiskAnalysisReport emptyReport(String taskId) {

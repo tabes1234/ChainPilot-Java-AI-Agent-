@@ -136,19 +136,34 @@ public class SupplyChainEventRecorder {
                 "model invocation started", null);
     }
 
+    /**
+     * A provider response that arrives after the task already reached a terminal state is real
+     * evidence: the invocation happened and the provider did answer. It keeps its type so call and
+     * fallback counters stay truthful, but carries CANCELLED status and an explicit note so no
+     * consumer can read it as the task resuming or as a persisted result.
+     */
     public void modelCompleted(String taskId, String stage, long startedNanos, String summary) {
-        append(taskId, SupplyChainEventType.MODEL_COMPLETED, stage, SupplyChainEventStatus.COMPLETED,
-                elapsedMillis(startedNanos), summary, null);
+        boolean ignored = TaskCancellationRegistry.isCancelled(taskId);
+        append(taskId, SupplyChainEventType.MODEL_COMPLETED, stage,
+                ignored ? SupplyChainEventStatus.CANCELLED : SupplyChainEventStatus.COMPLETED,
+                elapsedMillis(startedNanos), ignored ? lateResponseNote(summary) : summary, null);
     }
 
     public void modelFailed(String taskId, String stage, long startedNanos, Throwable failure) {
-        append(taskId, SupplyChainEventType.MODEL_FAILED, stage, SupplyChainEventStatus.FAILED,
-                elapsedMillis(startedNanos), "model invocation failed", errorType(failure));
+        boolean ignored = TaskCancellationRegistry.isCancelled(taskId);
+        append(taskId, SupplyChainEventType.MODEL_FAILED, stage,
+                ignored ? SupplyChainEventStatus.CANCELLED : SupplyChainEventStatus.FAILED,
+                elapsedMillis(startedNanos),
+                ignored ? lateResponseNote("model invocation failed") : "model invocation failed",
+                errorType(failure));
     }
 
     public void fallbackUsed(String taskId, String stage, String reason) {
-        append(taskId, SupplyChainEventType.FALLBACK_USED, stage, SupplyChainEventStatus.FALLBACK, null,
-                "deterministic fallback selected; reason=" + reason, null);
+        boolean ignored = TaskCancellationRegistry.isCancelled(taskId);
+        String summary = "deterministic fallback selected; reason=" + reason;
+        append(taskId, SupplyChainEventType.FALLBACK_USED, stage,
+                ignored ? SupplyChainEventStatus.CANCELLED : SupplyChainEventStatus.FALLBACK, null,
+                ignored ? lateResponseNote(summary) : summary, null);
     }
 
     public void intentRecognized(String taskId, String intent, String summary) {
@@ -199,6 +214,11 @@ public class SupplyChainEventRecorder {
 
     private static long elapsedMillis(long startedNanos) {
         return Math.max(0, (System.nanoTime() - startedNanos) / 1_000_000);
+    }
+
+    private static String lateResponseNote(String summary) {
+        return "late response ignored; the task already reached a terminal state and nothing was "
+                + "persisted from it; rawOutcome=" + summary;
     }
 
     private static String errorType(Throwable failure) {

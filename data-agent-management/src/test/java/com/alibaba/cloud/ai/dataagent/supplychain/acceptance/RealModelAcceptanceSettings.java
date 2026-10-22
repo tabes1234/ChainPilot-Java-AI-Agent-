@@ -52,6 +52,22 @@ public final class RealModelAcceptanceSettings {
 
     public static final String MAX_MODEL_CALLS_PROPERTY = "chainpilot.real-model.max-model-calls";
 
+    public static final String MAX_HTTP_ATTEMPTS_PROPERTY = "chainpilot.real-model.max-http-attempts";
+
+    public static final String MAX_RUN_HTTP_ATTEMPTS_PROPERTY = "chainpilot.real-model.max-run-http-attempts";
+
+    /**
+     * Comma-separated AGENT evaluation case ids for the evaluation-centre acceptance run. Selection is
+     * explicit so a guarded or fallback-only case can never be folded into a real-model pass rate by
+     * accident; the harness additionally rejects any case that declares no model-participation
+     * assertion.
+     */
+    public static final String AGENT_CASES_PROPERTY = "chainpilot.real-model.agent-cases";
+
+    public static final String DEFAULT_AGENT_CASES = "WF-ANALYSIS-HIGH-RISK";
+
+    private static final int MAX_AGENT_CASES = 5;
+
     private static final Map<String, String> ENVIRONMENT_NAMES = environmentNames();
 
     // Reasoning models charge reasoning_content against max_tokens; 512 can leave no budget for visible content.
@@ -68,6 +84,19 @@ public final class RealModelAcceptanceSettings {
     private static final int DEFAULT_MAX_MODEL_CALLS = 12;
 
     private static final int MAX_MODEL_CALLS_LIMIT = 50;
+
+    /**
+     * One model stage is not one outbound request. Spring AI's default retry template re-sends any
+     * 5xx or connection/read-timeout failure up to 10 times per stage and every native tool-calling
+     * turn is another stage, so the request budget is tracked separately from the stage budget.
+     */
+    private static final int DEFAULT_MAX_HTTP_ATTEMPTS = 20;
+
+    private static final int MAX_HTTP_ATTEMPTS_LIMIT = 40;
+
+    private static final int DEFAULT_MAX_RUN_HTTP_ATTEMPTS = 60;
+
+    private static final int MAX_RUN_HTTP_ATTEMPTS_LIMIT = 100;
 
     private final boolean enabled;
 
@@ -87,11 +116,17 @@ public final class RealModelAcceptanceSettings {
 
     private final int maxModelCalls;
 
+    private final int maxHttpAttempts;
+
+    private final int maxRunHttpAttempts;
+
+    private final List<String> agentCases;
+
     private final List<String> problems;
 
     private RealModelAcceptanceSettings(boolean enabled, String provider, String baseUrl, String modelName,
             String apiKey, String completionsPath, int maxTokens, int timeoutSeconds, int maxModelCalls,
-            List<String> problems) {
+            int maxHttpAttempts, int maxRunHttpAttempts, List<String> agentCases, List<String> problems) {
         this.enabled = enabled;
         this.provider = provider;
         this.baseUrl = baseUrl;
@@ -101,6 +136,9 @@ public final class RealModelAcceptanceSettings {
         this.maxTokens = maxTokens;
         this.timeoutSeconds = timeoutSeconds;
         this.maxModelCalls = maxModelCalls;
+        this.maxHttpAttempts = maxHttpAttempts;
+        this.maxRunHttpAttempts = maxRunHttpAttempts;
+        this.agentCases = List.copyOf(agentCases);
         this.problems = List.copyOf(problems);
     }
 
@@ -123,7 +161,8 @@ public final class RealModelAcceptanceSettings {
         boolean enabled = "true".equalsIgnoreCase(trim(reader.apply(ENABLE_PROPERTY)));
         if (!enabled) {
             return new RealModelAcceptanceSettings(false, null, null, null, null, null,
-                    DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_MODEL_CALLS, List.of());
+                    DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_MODEL_CALLS, DEFAULT_MAX_HTTP_ATTEMPTS,
+                    DEFAULT_MAX_RUN_HTTP_ATTEMPTS, List.of(DEFAULT_AGENT_CASES), List.of());
         }
 
         List<String> problems = new ArrayList<>();
@@ -140,9 +179,25 @@ public final class RealModelAcceptanceSettings {
                 MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, problems);
         int maxModelCalls = boundedInteger(reader, MAX_MODEL_CALLS_PROPERTY, DEFAULT_MAX_MODEL_CALLS, 1,
                 MAX_MODEL_CALLS_LIMIT, problems);
+        int maxHttpAttempts = boundedInteger(reader, MAX_HTTP_ATTEMPTS_PROPERTY, DEFAULT_MAX_HTTP_ATTEMPTS, 1,
+                MAX_HTTP_ATTEMPTS_LIMIT, problems);
+        int maxRunHttpAttempts = boundedInteger(reader, MAX_RUN_HTTP_ATTEMPTS_PROPERTY, DEFAULT_MAX_RUN_HTTP_ATTEMPTS,
+                1, MAX_RUN_HTTP_ATTEMPTS_LIMIT, problems);
+        if (maxHttpAttempts > maxRunHttpAttempts) {
+            problems.add(name(MAX_HTTP_ATTEMPTS_PROPERTY) + " must not exceed " + name(MAX_RUN_HTTP_ATTEMPTS_PROPERTY)
+                    + "; a per-scenario ceiling above the run ceiling would never be enforced");
+        }
+        List<String> agentCases = agentCases(reader.apply(AGENT_CASES_PROPERTY));
+        if (agentCases.isEmpty()) {
+            problems.add(name(AGENT_CASES_PROPERTY) + " must name at least one AGENT case when it is set");
+        }
+        else if (agentCases.size() > MAX_AGENT_CASES) {
+            problems.add(name(AGENT_CASES_PROPERTY) + " must not select more than " + MAX_AGENT_CASES
+                    + " AGENT cases in one acceptance run");
+        }
 
-        return new RealModelAcceptanceSettings(true, provider, baseUrl, modelName, apiKey, completionsPath,
-                maxTokens, timeoutSeconds, maxModelCalls, problems);
+        return new RealModelAcceptanceSettings(true, provider, baseUrl, modelName, apiKey, completionsPath, maxTokens,
+                timeoutSeconds, maxModelCalls, maxHttpAttempts, maxRunHttpAttempts, agentCases, problems);
     }
 
     public boolean enabled() {
@@ -181,6 +236,18 @@ public final class RealModelAcceptanceSettings {
         return maxModelCalls;
     }
 
+    public int maxHttpAttempts() {
+        return maxHttpAttempts;
+    }
+
+    public int maxRunHttpAttempts() {
+        return maxRunHttpAttempts;
+    }
+
+    public List<String> agentCases() {
+        return agentCases;
+    }
+
     public List<String> problems() {
         return problems;
     }
@@ -211,6 +278,37 @@ public final class RealModelAcceptanceSettings {
         }
         catch (IllegalArgumentException exception) {
             return "<invalid base URL>";
+        }
+    }
+
+    /**
+     * Whether the configured endpoint could be real provider evidence at all. A loopback or any-local
+     * address is a rehearsal target: the very same assertions run against it, so the artifact has to say
+     * which kind of endpoint produced it instead of letting a local run read as provider acceptance.
+     */
+    public boolean endpointIsExternal() {
+        if (!StringUtils.hasText(baseUrl)) {
+            return false;
+        }
+        try {
+            String host = URI.create(baseUrl).getHost();
+            if (host == null) {
+                return false;
+            }
+            String normalized = host.toLowerCase(Locale.ROOT);
+            // An IPv6 literal arrives with its brackets still attached: java.net.URI reports "[::1]".
+            if (normalized.startsWith("[") && normalized.endsWith("]") && normalized.length() > 2) {
+                normalized = normalized.substring(1, normalized.length() - 1);
+            }
+            if (normalized.startsWith("127.") || normalized.equals("::1") || normalized.equals("0.0.0.0")
+                    || normalized.equals("::") || normalized.equals("localhost")
+                    || normalized.endsWith(".localhost")) {
+                return false;
+            }
+            return true;
+        }
+        catch (IllegalArgumentException exception) {
+            return false;
         }
     }
 
@@ -289,6 +387,21 @@ public final class RealModelAcceptanceSettings {
         return StringUtils.hasText(trimmed) ? trimmed : null;
     }
 
+    /** Comma-separated list with a default when absent; blanks and duplicates are dropped. */
+    private static List<String> csv(String value, String defaultValue) {
+        String source = trimToNull(value) == null ? defaultValue : value;
+        return java.util.Arrays.stream(source.split(","))
+            .map(String::trim)
+            .filter(StringUtils::hasText)
+            .distinct()
+            .toList();
+    }
+
+    /** An absent property means the default case set; a present but empty one is a configuration error. */
+    private static List<String> agentCases(String value) {
+        return trimToNull(value) == null ? List.of(DEFAULT_AGENT_CASES) : csv(value, "");
+    }
+
     private static Map<String, String> environmentNames() {
         Map<String, String> names = new LinkedHashMap<>();
         names.put(ENABLE_PROPERTY, "CHAINPILOT_REAL_MODEL_ACCEPTANCE");
@@ -300,6 +413,9 @@ public final class RealModelAcceptanceSettings {
         names.put(MAX_TOKENS_PROPERTY, "CHAINPILOT_REAL_MODEL_MAX_TOKENS");
         names.put(TIMEOUT_SECONDS_PROPERTY, "CHAINPILOT_REAL_MODEL_TIMEOUT_SECONDS");
         names.put(MAX_MODEL_CALLS_PROPERTY, "CHAINPILOT_REAL_MODEL_MAX_MODEL_CALLS");
+        names.put(MAX_HTTP_ATTEMPTS_PROPERTY, "CHAINPILOT_REAL_MODEL_MAX_HTTP_ATTEMPTS");
+        names.put(MAX_RUN_HTTP_ATTEMPTS_PROPERTY, "CHAINPILOT_REAL_MODEL_MAX_RUN_HTTP_ATTEMPTS");
+        names.put(AGENT_CASES_PROPERTY, "CHAINPILOT_REAL_MODEL_AGENT_CASES");
         return Map.copyOf(names);
     }
 

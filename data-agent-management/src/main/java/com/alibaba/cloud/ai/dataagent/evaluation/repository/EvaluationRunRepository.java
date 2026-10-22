@@ -32,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.IOException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,6 +51,10 @@ public class EvaluationRunRepository {
     private static final String RUN_TABLE = "chainpilot_evaluation_run";
 
     private static final String RESULT_TABLE = "chainpilot_evaluation_case_result";
+
+    private static final String LOCK_TABLE = "chainpilot_evaluation_lock";
+
+    private static final String LOCK_NAME = "AGENT_EVALUATION";
 
     private static final TypeReference<List<EvaluationAssertionResult>> ASSERTION_LIST = new TypeReference<>() {
     };
@@ -70,6 +75,131 @@ public class EvaluationRunRepository {
         this.mapper = mapper;
         createTables();
         upgradeExistingTables();
+        ensureLockRow();
+    }
+
+    private void ensureLockRow() {
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM " + LOCK_TABLE + " WHERE lock_name=?",
+                Integer.class, LOCK_NAME) > 0) {
+            return;
+        }
+        try {
+            jdbc.update("INSERT INTO " + LOCK_TABLE + " (lock_name,owner_instance_id,lease_expires_at,"
+                            + "fence_version,run_id,updated_at) VALUES (?,NULL,0,0,NULL,?)",
+                    LOCK_NAME, databaseNowMillis());
+        }
+        catch (RuntimeException ignored) {
+            // Another JVM initialized the same lock row concurrently.
+        }
+    }
+
+    public long databaseNowMillis() {
+        Timestamp timestamp = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", Timestamp.class);
+        if (timestamp == null) {
+            throw new IllegalStateException("Database returned no current timestamp");
+        }
+        return timestamp.getTime();
+    }
+
+    /** Claims the database-level AGENT evaluation lock; returns the new fence or empty if busy. */
+    @Transactional
+    public Optional<Long> claimEvaluationLock(String owner, long leaseExpiresAt, String runId) {
+        long now = databaseNowMillis();
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT owner_instance_id, lease_expires_at FROM " + LOCK_TABLE + " WHERE lock_name=? FOR UPDATE",
+                LOCK_NAME);
+        if (rows.isEmpty()) {
+            jdbc.update("INSERT INTO " + LOCK_TABLE + " (lock_name,owner_instance_id,lease_expires_at,"
+                            + "fence_version,run_id,updated_at) VALUES (?,?,?,1,?,?)",
+                    LOCK_NAME, owner, leaseExpiresAt, runId, now);
+            return Optional.of(1L);
+        }
+        Map<String, Object> row = rows.get(0);
+        Object currentOwner = row.get("owner_instance_id");
+        Number lease = (Number) row.get("lease_expires_at");
+        if (currentOwner != null && lease != null && lease.longValue() >= now) {
+            return Optional.empty();
+        }
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET owner_instance_id=?, lease_expires_at=?, "
+                        + "fence_version=fence_version+1, run_id=?, updated_at=? WHERE lock_name=?",
+                owner, leaseExpiresAt, runId, now, LOCK_NAME);
+        Long fence = jdbc.queryForObject("SELECT fence_version FROM " + LOCK_TABLE + " WHERE lock_name=?",
+                Long.class, LOCK_NAME);
+        return Optional.of(fence == null ? 1L : fence);
+    }
+
+    public boolean renewEvaluationLock(String owner, long fenceVersion, long leaseExpiresAt) {
+        return jdbc.update("UPDATE " + LOCK_TABLE + " SET lease_expires_at=?, updated_at=? "
+                        + "WHERE lock_name=? AND owner_instance_id=? AND fence_version=?",
+                leaseExpiresAt, databaseNowMillis(), LOCK_NAME, owner, fenceVersion) > 0;
+    }
+
+    public void releaseEvaluationLock(String owner, long fenceVersion) {
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET owner_instance_id=NULL, lease_expires_at=0, run_id=NULL, "
+                        + "updated_at=? WHERE lock_name=? AND owner_instance_id=? AND fence_version=?",
+                databaseNowMillis(), LOCK_NAME, owner, fenceVersion);
+    }
+
+    /** Atomically claims an expired lock and returns the run it owned, if any. */
+    @Transactional
+    public Optional<String> claimExpiredEvaluationRun(long now) {
+        return takeExpiredLock(now);
+    }
+
+    @Transactional
+    public boolean markRunInterrupted(String runId, String reason) {
+        return interruptRun(runId, reason);
+    }
+
+    /**
+     * Takes an expired lease and closes the run it owned in one transaction. Doing the two steps
+     * separately could leave a RUNNING run with no owner and no lease, which no later instance
+     * would be able to recover.
+     */
+    @Transactional
+    public Optional<String> expireRunAndMarkInterrupted(long now, String reason) {
+        Optional<String> runId = takeExpiredLock(now);
+        runId.ifPresent(id -> interruptRun(id, reason));
+        return runId;
+    }
+
+    private Optional<String> takeExpiredLock(long now) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT owner_instance_id, lease_expires_at, run_id FROM " + LOCK_TABLE
+                        + " WHERE lock_name=? FOR UPDATE", LOCK_NAME);
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> row = rows.get(0);
+        Object runId = row.get("run_id");
+        Object owner = row.get("owner_instance_id");
+        Number lease = (Number) row.get("lease_expires_at");
+        if (runId == null || owner == null || lease == null || lease.longValue() >= now) {
+            return Optional.empty();
+        }
+        jdbc.update("UPDATE " + LOCK_TABLE + " SET owner_instance_id=NULL, lease_expires_at=0, run_id=NULL, "
+                        + "fence_version=fence_version+1, updated_at=? WHERE lock_name=?",
+                now, LOCK_NAME);
+        return Optional.of(String.valueOf(runId));
+    }
+
+    private boolean interruptRun(String runId, String reason) {
+        long now = databaseNowMillis();
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT started_at FROM " + RUN_TABLE + " WHERE run_id=? AND status='RUNNING'", runId);
+        if (rows.isEmpty()) {
+            return false;
+        }
+        Number startedAt = (Number) rows.get(0).get("started_at");
+        long duration = Math.max(0, now - (startedAt == null ? now : startedAt.longValue()));
+        jdbc.update("UPDATE " + RESULT_TABLE + " SET status=?, failure_type=?, failure_message=? "
+                        + "WHERE run_id=? AND status=?",
+                EvaluationCaseStatus.UNDETERMINED.name(), "INTERRUPTED", reason, runId,
+                EvaluationCaseStatus.RUNNING.name());
+        jdbc.update("UPDATE " + RUN_TABLE + " SET status=?, completed_at=?, duration_ms=?, failure_reason=? "
+                        + "WHERE run_id=? AND status='RUNNING'",
+                EvaluationRunStatus.FAILED.name(), now, duration, reason, runId);
+        return true;
     }
 
     private void createTables() {
@@ -93,6 +223,10 @@ public class EvaluationRunRepository {
         createIndexSafely("CREATE INDEX idx_evaluation_run_status_started ON " + RUN_TABLE
                 + " (status, started_at)");
         createIndexSafely("CREATE INDEX idx_evaluation_run_mode_started ON " + RUN_TABLE + " (mode, started_at)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS " + LOCK_TABLE + " ("
+                + "lock_name VARCHAR(64) PRIMARY KEY, owner_instance_id VARCHAR(64), "
+                + "lease_expires_at BIGINT NOT NULL, fence_version BIGINT NOT NULL, "
+                + "run_id VARCHAR(36), updated_at BIGINT NOT NULL)");
     }
 
     /** Additive upgrade for evaluation tables created by earlier ChainPilot builds. */
@@ -140,6 +274,42 @@ public class EvaluationRunRepository {
     /** Replaces a run snapshot atomically; a partial result set is never committed. */
     @Transactional
     public void save(EvaluationRun run) {
+        writeSnapshot(run);
+    }
+
+    /**
+     * Lease-fenced snapshot write used by AGENT runs. The lock row is locked first, so a
+     * concurrent takeover cannot interleave with the rewrite, and a former owner whose fence
+     * was replaced can neither advance nor finalize the run. A terminal snapshot releases the
+     * lease in the same transaction, so no window leaves a closed run still holding the lock.
+     */
+    @Transactional
+    public boolean saveOwned(EvaluationRun run, String owner, long fenceVersion) {
+        if (owner == null) {
+            return false;
+        }
+        List<String> held = jdbc.queryForList("SELECT lock_name FROM " + LOCK_TABLE
+                + " WHERE lock_name=? AND owner_instance_id=? AND fence_version=? FOR UPDATE",
+                String.class, LOCK_NAME, owner, fenceVersion);
+        if (held.isEmpty()) {
+            return false;
+        }
+        writeSnapshot(run);
+        if (run.status() != EvaluationRunStatus.RUNNING) {
+            releaseEvaluationLock(owner, fenceVersion);
+        }
+        return true;
+    }
+
+    /** Cross-instance truth: some JVM still holds a live AGENT evaluation lease. */
+    public boolean isEvaluationLockHeld() {
+        Long held = jdbc.queryForObject("SELECT COUNT(*) FROM " + LOCK_TABLE
+                + " WHERE lock_name=? AND owner_instance_id IS NOT NULL AND lease_expires_at >= ?",
+                Long.class, LOCK_NAME, databaseNowMillis());
+        return held != null && held > 0;
+    }
+
+    private void writeSnapshot(EvaluationRun run) {
         jdbc.update("DELETE FROM " + RESULT_TABLE + " WHERE run_id=?", run.runId());
         jdbc.update("DELETE FROM " + RUN_TABLE + " WHERE run_id=?", run.runId());
         jdbc.update("INSERT INTO " + RUN_TABLE + " (run_id,dataset_version,mode,status,environment,started_at,"
@@ -213,30 +383,6 @@ public class EvaluationRunRepository {
         return runs.stream()
             .map(run -> find(run.runId()).orElse(run))
             .toList();
-    }
-
-    /**
-     * A restarted single-instance deployment must not leave RUNNING runs forever. Any active
-     * run is closed as FAILED and its still-running cases become UNDETERMINED.
-     */
-    @Transactional
-    public int markInterruptedRuns(String reason) {
-        List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT run_id, started_at FROM " + RUN_TABLE + " WHERE status='RUNNING'");
-        long now = Instant.now().toEpochMilli();
-        for (Map<String, Object> row : rows) {
-            String runId = String.valueOf(row.get("run_id"));
-            Number startedAt = (Number) row.get("started_at");
-            long duration = Math.max(0, now - startedAt.longValue());
-            jdbc.update("UPDATE " + RESULT_TABLE + " SET status=?, failure_type=?, failure_message=? "
-                            + "WHERE run_id=? AND status=?",
-                    EvaluationCaseStatus.UNDETERMINED.name(), "INTERRUPTED", reason, runId,
-                    EvaluationCaseStatus.RUNNING.name());
-            jdbc.update("UPDATE " + RUN_TABLE + " SET status=?, completed_at=?, duration_ms=?, failure_reason=? "
-                            + "WHERE run_id=?",
-                    EvaluationRunStatus.FAILED.name(), now, duration, reason, runId);
-        }
-        return rows.size();
     }
 
     private EvaluationRun mapRun(ResultSet rs, int rowNum) throws SQLException {

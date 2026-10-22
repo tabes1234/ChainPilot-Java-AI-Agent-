@@ -48,6 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -235,6 +236,47 @@ class SupplyChainAnalysisServiceTest {
         assertEquals(List.of(SupplyChainEventType.MODEL_STARTED, SupplyChainEventType.MODEL_COMPLETED),
                 events.stream().map(SupplyChainTaskEvent::type).toList());
         assertEquals("GENERATING_REPORT", events.get(1).stage());
+    }
+
+    @Test
+    void cancellationDuringRateLimitBackoffPreventsASecondProviderCall() {
+        when(callResponseSpec.chatResponse()).thenAnswer(invocation -> {
+            TaskCancellationRegistry.request(TASK_ID);
+            throw new RuntimeException("429 Too Many Requests");
+        });
+        try (SupplyChainEventRecorder.TaskScope ignored = eventRecorder.openTask(TASK_ID)) {
+            assertThrows(SupplyChainTaskCancelledException.class, () -> analysisService.analyze("分析风险订单",
+                    TASK_ID, List.of(), List.of(), List.of(), 0, new WorkflowPlan(List.of("查询订单风险"), false)));
+        }
+        finally {
+            TaskCancellationRegistry.reset();
+        }
+
+        verify(requestSpec, times(1)).call();
+        List<SupplyChainTaskEvent> events = events();
+        assertEquals(List.of(SupplyChainEventType.MODEL_STARTED),
+                events.stream().map(SupplyChainTaskEvent::type).toList());
+        assertTrue(events.stream().noneMatch(event -> SupplyChainEventType.MODEL_FAILED.equals(event.type())
+                || SupplyChainEventType.FALLBACK_USED.equals(event.type())));
+    }
+
+    @Test
+    void canceledModelInterruptionIsNotRecordedAsAModelFailure() {
+        when(callResponseSpec.chatResponse()).thenAnswer(invocation -> {
+            TaskCancellationRegistry.request(TASK_ID);
+            throw new RuntimeException("request interrupted by cancellation");
+        });
+        try (SupplyChainEventRecorder.TaskScope ignored = eventRecorder.openTask(TASK_ID)) {
+            assertThrows(SupplyChainTaskCancelledException.class, () -> analysisService.analyze("分析风险订单",
+                    TASK_ID, List.of(), List.of(), List.of(), 0, new WorkflowPlan(List.of("查询订单风险"), false)));
+        }
+        finally {
+            TaskCancellationRegistry.reset();
+        }
+
+        List<SupplyChainTaskEvent> events = events();
+        assertEquals(List.of(SupplyChainEventType.MODEL_STARTED),
+                events.stream().map(SupplyChainTaskEvent::type).toList());
     }
 
     @Test

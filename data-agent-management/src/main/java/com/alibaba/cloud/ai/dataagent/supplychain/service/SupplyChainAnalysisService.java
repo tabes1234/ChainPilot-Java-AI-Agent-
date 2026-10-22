@@ -140,7 +140,13 @@ public class SupplyChainAnalysisService {
                 toolCalls = toolSession.calls();
             }
         }
+        catch (SupplyChainTaskCancelledException cancelled) {
+            throw cancelled;
+        }
         catch (Exception exception) {
+            if (TaskCancellationRegistry.isCancelled(taskId)) {
+                throw new SupplyChainTaskCancelledException(taskId);
+            }
             eventRecorder.modelFailed(eventTaskId, "GENERATING_REPORT", modelStarted, exception);
             eventRecorder.fallbackUsed(eventTaskId, "GENERATING_REPORT", exception.getClass().getSimpleName());
             log.warn("ChainPilot model analysis unavailable; returning verified rule-based result. taskId={} causeType={}",
@@ -224,7 +230,13 @@ public class SupplyChainAnalysisService {
             }
             eventRecorder.fallbackUsed(taskId, "PLANNING", "EMPTY_PLAN_RESPONSE");
         }
+        catch (SupplyChainTaskCancelledException cancelled) {
+            throw cancelled;
+        }
         catch (Exception exception) {
+            if (TaskCancellationRegistry.isCancelled(taskId)) {
+                throw new SupplyChainTaskCancelledException(taskId);
+            }
             eventRecorder.modelFailed(taskId, "PLANNING", modelStarted, exception);
             eventRecorder.fallbackUsed(taskId, "PLANNING", exception.getClass().getSimpleName());
             log.info("ChainPilot planner unavailable; using the deterministic analysis plan. causeType={}",
@@ -235,6 +247,7 @@ public class SupplyChainAnalysisService {
 
     private ModelInvocation callWithRateLimitRetry(Supplier<ChatResponse> call, String stage) {
         for (int attempt = 1;; attempt++) {
+            checkCancellation();
             try {
                 return ModelInvocation.from(call.get());
             }
@@ -245,6 +258,7 @@ public class SupplyChainAnalysisService {
                 log.info("ChainPilot model rate limited; retrying. stage={} attempt={}/{}", stage, attempt,
                         MAX_RATE_LIMIT_ATTEMPTS);
                 try {
+                    checkCancellation();
                     Thread.sleep(RATE_LIMIT_BACKOFF_MILLIS * attempt);
                 }
                 catch (InterruptedException interrupted) {
@@ -253,6 +267,10 @@ public class SupplyChainAnalysisService {
                 }
             }
         }
+    }
+
+    private void checkCancellation() {
+        TaskCancellationRegistry.check(eventRecorder.currentTaskId());
     }
 
     public record ModelInvocation(String content, Integer promptTokens, Integer completionTokens,

@@ -26,6 +26,7 @@ import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.EmbeddingModelCompat
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigDataService;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigDataServiceImpl;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigOpsService;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelReadinessService;
 import com.alibaba.cloud.ai.dataagent.supplychain.ChainPilotTestApplication;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskAnalysisReport;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskLevel;
@@ -36,8 +37,6 @@ import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskSummary;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import io.micrometer.observation.Observation;
-import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -55,8 +54,6 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.extension.TestWatcher;
 import org.mybatis.spring.annotation.MapperScan;
-import org.springframework.ai.chat.observation.ChatModelObservationContext;
-import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -81,8 +78,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -195,8 +190,13 @@ class SupplyChainRealModelAcceptanceIT {
         evidence.put("target.maxTokens", settings.maxTokens());
         evidence.put("target.timeoutSeconds", settings.timeoutSeconds());
         evidence.put("target.maxModelCalls", settings.maxModelCalls());
+        evidence.put("target.maxHttpAttemptsPerScenario", settings.maxHttpAttempts());
+        evidence.put("target.maxRunHttpAttempts", settings.maxRunHttpAttempts());
         evidence.put("config.activeChatConfigId", realConfigId);
         evidence.put("safety.hardModelCallCap", settings.maxModelCalls());
+        // The run-wide ceiling survives every per-scenario reset, so the whole acceptance run
+        // cannot exceed it no matter how many scenarios are executed.
+        observations.limitRunHttpAttempts(settings.maxRunHttpAttempts());
     }
 
     @BeforeEach
@@ -204,14 +204,27 @@ class SupplyChainRealModelAcceptanceIT {
         executedTests.add(testInfo.getTestMethod().map(method -> method.getName()).orElse("unknown"));
         observations.reset();
         observations.limitModelCalls(settings.maxModelCalls());
+        observations.limitHttpAttempts(settings.maxHttpAttempts());
     }
 
     @AfterEach
     void assertModelCallBudgetWasNotExceeded() {
         assertFalse(observations.budgetExceeded(),
-                () -> "The run attempted more model requests than the configured hard cap of "
+                () -> "The scenario attempted more model stages than the configured hard cap of "
                         + settings.maxModelCalls() + " and aborted the extra request. Investigate a possible "
                         + "tool-calling loop before raising -Dchainpilot.real-model.max-model-calls.");
+        assertFalse(observations.httpBudgetExceeded(),
+                () -> "The scenario attempted more outbound HTTP requests than the configured hard cap of "
+                        + settings.maxHttpAttempts() + " and blocked the next request before it was sent. "
+                        + "Provider-side retries (any 5xx or a connection/read timeout is retried up to 10 times "
+                        + "per stage by Spring AI's default retry template) are counted here even though they are "
+                        + "not separate model stages. Investigate the retry storm before raising "
+                        + "-Dchainpilot.real-model.max-http-attempts.");
+        assertFalse(observations.runBudgetExceeded(),
+                () -> "The whole acceptance run exceeded its outbound request ceiling of "
+                        + settings.maxRunHttpAttempts() + " (observed attempts: " + observations.runHttpAttempts()
+                        + "). This budget is never reset between scenarios, so the run must stop here instead of "
+                        + "continuing to spend.");
     }
 
     @AfterEach
@@ -219,6 +232,8 @@ class SupplyChainRealModelAcceptanceIT {
         String testName = testInfo.getTestMethod().map(java.lang.reflect.Method::getName).orElse("unknown");
         evidence.put("diagnostics." + testName + ".modelCalls", modelCallTrail());
         evidence.put("diagnostics." + testName + ".toolObservations", toolObservationTrail());
+        evidence.put("diagnostics." + testName + ".httpAttempts", observations.httpAttempts());
+        evidence.put("diagnostics." + testName + ".runHttpAttempts", observations.runHttpAttempts());
     }
 
     @AfterAll
@@ -820,11 +835,6 @@ class SupplyChainRealModelAcceptanceIT {
             .collect(Collectors.joining(", "));
     }
 
-    record ObservationRecord(String name, String errorType, long durationNanos, Map<String, String> attributes,
-            ChatModelResponseDiagnostics.ModelResponseDiagnostics model,
-            ChatModelResponseDiagnostics.ToolExecutionDiagnostics tool) {
-    }
-
     /**
      * Loopback endpoint that answers every chat-completion request with a non-retryable 401.
      * This proves the fallback path without a paid call, connection-refusal retries or an
@@ -891,90 +901,11 @@ class SupplyChainRealModelAcceptanceIT {
 
     }
 
-    private static final class RecordingObservationHandler implements ObservationHandler<Observation.Context> {
-
-        private static final Object START_NANOS = new Object();
-
-        private static final String MODEL_OPERATION = "gen_ai.client.operation";
-
-        private final List<ObservationRecord> records = new CopyOnWriteArrayList<>();
-
-        private final Set<String> requestedToolCallIds = ConcurrentHashMap.newKeySet();
-
-        private final AtomicInteger modelStarts = new AtomicInteger();
-
-        private final AtomicInteger modelCallLimit = new AtomicInteger(Integer.MAX_VALUE);
-
-        private volatile boolean budgetExceeded;
-
-        @Override
-        public void onStart(Observation.Context context) {
-            if (MODEL_OPERATION.equals(context.getName())) {
-                int call = modelStarts.incrementAndGet();
-                int limit = modelCallLimit.get();
-                if (call > limit) {
-                    budgetExceeded = true;
-                    throw new IllegalStateException("Real-model acceptance model-call budget exceeded: limit="
-                            + limit + "; the request was aborted before it was sent");
-                }
-            }
-            context.put(START_NANOS, System.nanoTime());
-        }
-
-        @Override
-        public void onStop(Observation.Context context) {
-            Long started = context.get(START_NANOS);
-            long ended = System.nanoTime();
-            Map<String, String> attributes = new LinkedHashMap<>();
-            context.getAllKeyValues()
-                .forEach(keyValue -> attributes.put(keyValue.getKey(), String.valueOf(keyValue.getValue())));
-
-            ChatModelResponseDiagnostics.ModelResponseDiagnostics model = null;
-            ChatModelResponseDiagnostics.ToolExecutionDiagnostics tool = null;
-            if (context instanceof ChatModelObservationContext chatContext) {
-                model = ChatModelResponseDiagnostics.from(chatContext.getRequest(), chatContext.getResponse(),
-                        requestedToolCallIds);
-                ChatModelResponseDiagnostics.rememberToolCallIds(chatContext.getResponse(), requestedToolCallIds);
-            }
-            else if (context instanceof ToolCallingObservationContext toolContext) {
-                tool = ChatModelResponseDiagnostics.from(toolContext);
-            }
-
-            records.add(new ObservationRecord(context.getName(),
-                    context.getError() == null ? null : context.getError().getClass().getSimpleName(),
-                    started == null ? -1L : ended - started, Map.copyOf(attributes), model, tool));
-        }
-
-        @Override
-        public boolean supportsContext(Observation.Context context) {
-            return true;
-        }
-
-        void reset() {
-            records.clear();
-            requestedToolCallIds.clear();
-            modelStarts.set(0);
-            budgetExceeded = false;
-        }
-
-        void limitModelCalls(int limit) {
-            modelCallLimit.set(limit);
-        }
-
-        boolean budgetExceeded() {
-            return budgetExceeded;
-        }
-
-        List<ObservationRecord> all() {
-            return List.copyOf(records);
-        }
-
-    }
-
     @TestConfiguration(proxyBeanMethods = false)
     @MapperScan(basePackageClasses = ModelConfigMapper.class)
     @Import({ ModelConfigDataServiceImpl.class, ModelConfigOpsService.class, ModelConfigController.class,
-            DynamicModelFactory.class, AiModelRegistry.class, EmbeddingModelCompatibilityValidator.class })
+            DynamicModelFactory.class, AiModelRegistry.class, EmbeddingModelCompatibilityValidator.class,
+            ModelReadinessService.class })
     static class RealModelAcceptanceConfiguration {
 
         @Bean

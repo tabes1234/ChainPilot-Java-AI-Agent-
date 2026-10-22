@@ -278,7 +278,13 @@ public class SupplyChainDecisionService {
                 plan = call(collected, "findDisposalPlan",
                         () -> agentTools.findDisposalPlanForWorkflow(execution.disposalPlanId()));
             }
+            catch (SupplyChainTaskCancelledException cancelled) {
+                throw cancelled;
+            }
             catch (RuntimeException exception) {
+                if (TaskCancellationRegistry.isCancelled(taskId)) {
+                    throw new SupplyChainTaskCancelledException(taskId);
+                }
                 log.info("Linked disposal plan unavailable while reading execution; continuing with execution only");
             }
         }
@@ -500,7 +506,13 @@ public class SupplyChainDecisionService {
                     "model returned an empty decision narrative; " + completion.usageSummary());
             eventRecorder.fallbackUsed(evidenceTaskId, "DECISION_SUMMARY", "EMPTY_MODEL_RESPONSE");
         }
+        catch (SupplyChainTaskCancelledException cancelled) {
+            throw cancelled;
+        }
         catch (RuntimeException exception) {
+            if (TaskCancellationRegistry.isCancelled(taskId)) {
+                throw new SupplyChainTaskCancelledException(taskId);
+            }
             eventRecorder.modelFailed(evidenceTaskId, "DECISION_SUMMARY", started, exception);
             eventRecorder.fallbackUsed(evidenceTaskId, "DECISION_SUMMARY", exception.getClass().getSimpleName());
             log.info("ChainPilot decision narrative unavailable; using deterministic summary. taskId={} causeType={}",

@@ -88,6 +88,7 @@ public class SupplyChainWorkflowService {
     private final Map<String, Future<?>> runningFutures = new ConcurrentHashMap<>();
     private final CompiledGraph workflow;
     private TransactionTemplate transactionTemplate;
+    private TaskLeaseManager taskLeaseManager;
 
     public SupplyChainWorkflowService(SupplyChainAgentTools agentTools,
             SupplyChainAnalysisService analysisService, SupplyChainDecisionService decisionService,
@@ -104,7 +105,8 @@ public class SupplyChainWorkflowService {
         this.eventRecorder = eventRecorder;
         this.analysisExecutor = analysisExecutor;
         TaskCancellationRegistry.installPersistentChecker(taskId -> taskRepository.findTask(taskId)
-            .map(status -> SupplyChainTaskState.CANCELLED.equals(status.status()))
+            .map(status -> !SupplyChainTaskState.ACCEPTED.equals(status.status())
+                    && !SupplyChainTaskState.RUNNING.equals(status.status()))
             .orElse(false));
         KeyStrategyFactory keyStrategies = () -> {
             Map<String, KeyStrategy> strategies = new HashMap<>();
@@ -256,6 +258,11 @@ public class SupplyChainWorkflowService {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
+    @Autowired(required = false)
+    public void setTaskLeaseManager(TaskLeaseManager taskLeaseManager) {
+        this.taskLeaseManager = taskLeaseManager;
+    }
+
     public RiskAnalysisReport analyze(String question) {
         validateQuestion(question);
         String taskId = UUID.randomUUID().toString();
@@ -361,6 +368,22 @@ public class SupplyChainWorkflowService {
     }
 
     private void execute(String taskId, String question, String taskType) {
+        TaskLease lease = taskLeaseManager == null ? null : taskLeaseManager.claim(taskId);
+        if (taskLeaseManager != null && lease == null) {
+            log.info("ChainPilot task was not claimed by this instance. taskId={}", taskId);
+            return;
+        }
+        try {
+            executeClaimed(taskId, question, taskType);
+        }
+        finally {
+            if (lease != null) {
+                taskLeaseManager.release(taskId);
+            }
+        }
+    }
+
+    private void executeClaimed(String taskId, String question, String taskType) {
         SupplyChainTaskStatus initial = taskRepository.findTask(taskId).orElse(null);
         if (initial == null || SupplyChainTaskState.CANCELLED.equals(initial.status())
                 || TaskCancellationRegistry.isCancelled(taskId)) {
@@ -375,7 +398,12 @@ public class SupplyChainWorkflowService {
             if (SupplyChainTaskType.DECISION.equals(taskType)) {
                 DecisionTaskResult decision = restoreDecision(taskId, question, result);
                 ensureActive(taskId);
-                if (!taskRepository.completeDecision(taskId, decision, "DONE", 0)) {
+                TaskLease lease = currentLease(taskId);
+                boolean completed = lease == null
+                        ? taskRepository.completeDecision(taskId, decision, "DONE", 0)
+                        : taskRepository.completeDecision(taskId, decision, "DONE", 0, lease.ownerId(),
+                                lease.fenceVersion());
+                if (!completed) {
                     return;
                 }
                 eventRecorder.taskCompleted(taskId, started, "decision intent=" + decision.intent()
@@ -392,7 +420,12 @@ public class SupplyChainWorkflowService {
             try {
                 RiskAnalysisReport restored = objectMapper.readValue(report.get(), RiskAnalysisReport.class);
                 ensureActive(taskId);
-                if (!taskRepository.completeAnalysis(taskId, restored, "DONE", task(taskId).validationAttempts())) {
+                TaskLease lease = currentLease(taskId);
+                boolean completed = lease == null
+                        ? taskRepository.completeAnalysis(taskId, restored, "DONE", task(taskId).validationAttempts())
+                        : taskRepository.completeAnalysis(taskId, restored, "DONE",
+                                task(taskId).validationAttempts(), lease.ownerId(), lease.fenceVersion());
+                if (!completed) {
                     return;
                 }
                 eventRecorder.taskCompleted(taskId, started, "report generated; modelAssisted="
@@ -428,11 +461,20 @@ public class SupplyChainWorkflowService {
 
     private void ensureActive(String taskId) {
         TaskCancellationRegistry.check(taskId);
-        SupplyChainTaskStatus status = taskRepository.findTask(taskId)
-            .orElseThrow(() -> new IllegalArgumentException("Unknown ChainPilot task: " + taskId));
-        if (SupplyChainTaskState.CANCELLED.equals(status.status())) {
+        if (taskLeaseManager != null && taskLeaseManager.isLost(taskId)) {
             throw new SupplyChainTaskCancelledException(taskId);
         }
+        SupplyChainTaskStatus status = taskRepository.findTask(taskId)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown ChainPilot task: " + taskId));
+        if (SupplyChainTaskState.CANCELLED.equals(status.status())
+                || SupplyChainTaskState.FAILED.equals(status.status())
+                || SupplyChainTaskState.COMPLETED.equals(status.status())) {
+            throw new SupplyChainTaskCancelledException(taskId);
+        }
+    }
+
+    private TaskLease currentLease(String taskId) {
+        return taskLeaseManager == null ? null : taskLeaseManager.current(taskId);
     }
 
     private boolean isCancelled(String taskId) {
@@ -440,7 +482,8 @@ public class SupplyChainWorkflowService {
             return true;
         }
         return taskRepository.findTask(taskId)
-            .map(status -> SupplyChainTaskState.CANCELLED.equals(status.status()))
+            .map(status -> !SupplyChainTaskState.ACCEPTED.equals(status.status())
+                    && !SupplyChainTaskState.RUNNING.equals(status.status()))
             .orElse(false);
     }
 
@@ -565,7 +608,16 @@ public class SupplyChainWorkflowService {
 
     private void updateTask(String taskId, String status, String step, int attempts, String error) {
         if (taskId != null && !taskId.isBlank()) {
-            taskRepository.update(new SupplyChainTaskStatus(taskId, status, step, attempts, error, Instant.now()));
+            TaskLease lease = currentLease(taskId);
+            if (lease == null) {
+                taskRepository.update(new SupplyChainTaskStatus(taskId, status, step, attempts, error, Instant.now()));
+            }
+            else if (!taskRepository.updateOwned(
+                    new SupplyChainTaskStatus(taskId, status, step, attempts, error, Instant.now()),
+                    lease.ownerId(), lease.fenceVersion())) {
+                taskLeaseManager.markLost(taskId, "task state update rejected by owner/fence/state");
+                throw new SupplyChainTaskCancelledException(taskId);
+            }
             log.info("ChainPilot task {} status={} step={} validationAttempts={}", taskId, status, step, attempts);
         }
     }

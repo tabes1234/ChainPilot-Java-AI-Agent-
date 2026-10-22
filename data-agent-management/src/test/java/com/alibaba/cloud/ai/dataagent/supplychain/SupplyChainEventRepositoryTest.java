@@ -23,17 +23,31 @@ import com.alibaba.cloud.ai.dataagent.supplychain.repository.SupplyChainEventRep
 import com.alibaba.cloud.ai.dataagent.supplychain.repository.SupplyChainTaskRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class SupplyChainEventRepositoryTest {
 
@@ -85,6 +99,54 @@ class SupplyChainEventRepositoryTest {
         assertEquals(1, restored.size());
         assertEquals(500, restored.get(0).summary().length());
         assertEquals(128, restored.get(0).errorType().length());
+    }
+
+    @Test
+    void concurrentAppendsFromTwoRepositoryInstancesKeepUniqueSequences() throws Exception {
+        JdbcTemplate jdbc = jdbc();
+        SupplyChainTaskRepository tasks = new SupplyChainTaskRepository(jdbc, mapper());
+        seedTasks(tasks);
+        SupplyChainEventRepository first = new SupplyChainEventRepository(jdbc);
+        SupplyChainEventRepository second = new SupplyChainEventRepository(jdbc);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<SupplyChainTaskEvent> one = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return first.append("task-a", SupplyChainEventType.NODE_STARTED, "A",
+                        SupplyChainEventStatus.STARTED, Instant.now(), null, "first", null);
+            });
+            Future<SupplyChainTaskEvent> two = pool.submit(() -> {
+                start.await(5, TimeUnit.SECONDS);
+                return second.append("task-a", SupplyChainEventType.NODE_STARTED, "B",
+                        SupplyChainEventStatus.STARTED, Instant.now(), null, "second", null);
+            });
+            start.countDown();
+            one.get(10, TimeUnit.SECONDS);
+            two.get(10, TimeUnit.SECONDS);
+        }
+        finally {
+            pool.shutdownNow();
+        }
+        List<SupplyChainTaskEvent> restored = first.findByTaskId("task-a");
+        assertEquals(List.of(1, 2), restored.stream().map(SupplyChainTaskEvent::sequence).toList());
+        assertEquals(2, restored.size());
+    }
+
+    @Test
+    void appendFailsExplicitlyAfterTheRetryLimitInsteadOfDroppingTheEvent() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(anyString(), eq(Integer.class), eq("task-retry"))).thenReturn(List.of(1));
+        when(jdbc.update(anyString(), any(Object[].class))).thenThrow(new DuplicateKeyException("duplicate"));
+        SupplyChainEventRepository events = new SupplyChainEventRepository(jdbc);
+
+        DuplicateKeyException failure = assertThrows(DuplicateKeyException.class,
+                () -> events.append("task-retry", SupplyChainEventType.NODE_STARTED, "A",
+                        SupplyChainEventStatus.STARTED, Instant.now(), null, "retry", null));
+
+        assertTrue(failure.getMessage().contains("duplicate"));
+        verify(jdbc, times(5)).queryForList(anyString(), eq(Integer.class), eq("task-retry"));
+        verify(jdbc, times(5)).update(anyString(), any(Object[].class));
     }
 
     private static void seedTasks(SupplyChainTaskRepository repository) {

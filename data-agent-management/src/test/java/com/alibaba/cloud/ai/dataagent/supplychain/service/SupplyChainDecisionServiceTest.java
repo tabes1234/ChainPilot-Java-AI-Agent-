@@ -176,6 +176,17 @@ class SupplyChainDecisionServiceTest {
     }
 
     @Test
+    void cancellationFromDecisionNarrativeIsPropagatedInsteadOfFallingBack() {
+        when(agentTools.compareReplenishmentForWorkflow("SKU-MCU-001", "50,100,200"))
+            .thenReturn(replenishmentComparison());
+        when(analysisService.complete(anyString(), anyString(), eq("DECISION_SUMMARY")))
+            .thenThrow(new SupplyChainTaskCancelledException("task-cancelled"));
+
+        assertThrows(SupplyChainTaskCancelledException.class,
+                () -> decisionService.decide("task-cancelled", "比较 SKU-MCU-001 补货 50、100、200 件的方案"));
+    }
+
+    @Test
     void emptyModelResponseFallsBackInsteadOfAcceptingBlankEvidence() {
         when(agentTools.simulateInventoryReplenishmentForWorkflow("SKU-MCU-001", 100))
             .thenReturn(replenishmentSimulation());
@@ -246,6 +257,31 @@ class SupplyChainDecisionServiceTest {
         verifyNoInteractions(analysisService);
         verify(proposalService).create(eq("task-sandbox"), eq(ProposalActionType.START_SANDBOX_EXECUTION),
                 eq("启动方案 " + planId + " 的沙箱演练"), eq(planId), anyMap(), anyList());
+    }
+
+    @Test
+    void cancellationAfterProposalCreationCompensatesTheProposal() {
+        String planId = UUID.randomUUID().toString();
+        DisposalPlan plan = selectedPlan(planId);
+        SandboxExecutionEligibility eligibility = eligible(planId);
+        when(agentTools.findDisposalPlanForWorkflow(planId)).thenReturn(plan);
+        when(agentTools.checkSandboxExecutionEligibilityForWorkflow(planId)).thenReturn(eligibility);
+        DecisionProposal proposal = proposal(planId);
+        when(proposalService.create(anyString(), any(), anyString(), anyString(), anyMap(), anyList()))
+            .thenAnswer(invocation -> {
+                TaskCancellationRegistry.request("task-proposal-cancel");
+                return proposal;
+            });
+
+        try {
+            assertThrows(SupplyChainTaskCancelledException.class,
+                    () -> decisionService.decide("task-proposal-cancel", "启动方案 " + planId + " 的沙箱演练"));
+        }
+        finally {
+            TaskCancellationRegistry.reset();
+        }
+
+        verify(proposalService).cancel(proposal.proposalId(), proposal.contentHash());
     }
 
     @Test

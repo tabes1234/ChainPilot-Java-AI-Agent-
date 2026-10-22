@@ -41,6 +41,8 @@ import com.alibaba.cloud.ai.dataagent.supplychain.model.KnowledgeCitation;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.OrderRiskAssessment;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.RiskAnalysisReport;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplierRiskProfile;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainEventStatus;
+import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainEventType;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskEvent;
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskStatus;
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainKnowledgeService;
@@ -48,7 +50,6 @@ import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainQueryServic
 import com.alibaba.cloud.ai.dataagent.supplychain.service.SupplyChainWorkflowService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -66,7 +67,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Executes the evaluation catalogue.
@@ -74,7 +74,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>OFFLINE runs the deterministic production services (risk scoring, inventory,
  * suppliers, lexical retrieval) with no model calls and no writes to business tables.
  * AGENT runs must be started explicitly and submit real supply-chain tasks; results are
- * persisted so the UI can poll and link each case back to its task.
+ * persisted so the UI can poll and link each case back to its task. An AGENT run is guarded
+ * by a database lease, so only the current fence holder may advance or finalize it even when
+ * several JVMs poll the same run.
  */
 @Service
 public class AgentEvaluationService {
@@ -89,9 +91,11 @@ public class AgentEvaluationService {
 
     private static final String AGENT_ENVIRONMENT = "CURRENT_BACKEND";
 
-    private static final String INTERRUPTED_REASON = "应用重启时评测运行仍未完成";
+    private static final String RUN_LOCK_SCOPE = "DATABASE_LEASE";
 
     private static final String TIMEOUT_FAILURE = "AGENT 评测在 " + AGENT_TIMEOUT.toMinutes() + " 分钟内未完成";
+
+    private static final String CANCELLED_FAILURE = "AGENT 评测存在被取消的任务，未获得结论";
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
@@ -114,13 +118,14 @@ public class AgentEvaluationService {
 
     private final ModelReadinessService modelReadinessService;
 
-    private final AtomicBoolean agentRunActive = new AtomicBoolean(false);
+    private final EvaluationLeaseManager evaluationLease;
 
     @Autowired
     public AgentEvaluationService(EvaluationCatalog catalog, SupplyChainQueryService queryService,
             SupplyChainKnowledgeService knowledgeService, SupplyChainWorkflowService workflowService,
             EvaluationRunRepository repository, EvaluationMetricsCalculator metricsCalculator,
-            ObjectMapper mapper, FeedbackRepository feedbackRepository, ModelReadinessService modelReadinessService) {
+            ObjectMapper mapper, FeedbackRepository feedbackRepository, ModelReadinessService modelReadinessService,
+            EvaluationLeaseManager evaluationLease) {
         this.catalog = catalog;
         this.queryService = queryService;
         this.knowledgeService = knowledgeService;
@@ -130,13 +135,7 @@ public class AgentEvaluationService {
         this.mapper = mapper;
         this.feedbackRepository = feedbackRepository;
         this.modelReadinessService = modelReadinessService;
-    }
-
-    /** A process restart must not leave a RUNNING run that can never finish. */
-    @PostConstruct
-    public void recoverInterruptedRuns() {
-        agentRunActive.set(false);
-        repository.markInterruptedRuns(INTERRUPTED_REASON);
+        this.evaluationLease = evaluationLease;
     }
 
     public List<EvaluationCaseDefinition> cases() {
@@ -169,8 +168,9 @@ public class AgentEvaluationService {
         capabilities.put("agentModeRequiresExplicitStart", true);
         capabilities.put("agentModeRequiresConfirmation", true);
         capabilities.put("agentModeRequiresConnectionTest", true);
-        capabilities.put("agentRunLockScope", "SINGLE_INSTANCE_PROCESS");
-        capabilities.put("agentRunActive", agentRunActive.get());
+        capabilities.put("agentRunLockScope", RUN_LOCK_SCOPE);
+        capabilities.put("agentRunActive", repository.isEvaluationLockHeld());
+        capabilities.put("agentRunOwnerIsCurrentInstance", evaluationLease.ownsRun(evaluationLease.activeRunId()));
         capabilities.put("agentTimeoutMinutes", AGENT_TIMEOUT.toMinutes());
         capabilities.put("environment", AGENT_ENVIRONMENT);
         capabilities.put("warning", "OFFLINE 模式仅执行确定性检查，不调用模型；AGENT 模式会提交真实任务，可能产生模型调用与向量化费用。两种模式的指标分开统计。");
@@ -605,23 +605,30 @@ public class AgentEvaluationService {
     // ── AGENT ──────────────────────────────────────────────────────────────
 
     private EvaluationRun startAgentRun(List<EvaluationCaseDefinition> definitions) {
-        if (!agentRunActive.compareAndSet(false, true)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "已有 AGENT 评测运行中，请等待完成后再启动");
+        String runId = UUID.randomUUID().toString();
+        if (!evaluationLease.claim(runId)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "已有 AGENT 评测持有数据库租约，请等待其完成或租约到期后再启动");
         }
         Instant startedAt = Instant.now();
-        List<EvaluationCaseResult> results = new ArrayList<>();
+        boolean persisted = false;
         try {
+            List<EvaluationCaseResult> results = new ArrayList<>();
             for (EvaluationCaseDefinition definition : definitions) {
                 results.add(submitAgentCase(definition));
             }
-            EvaluationRun running = buildRun(UUID.randomUUID().toString(), EvaluationMode.AGENT, AGENT_ENVIRONMENT,
-                    startedAt, null, EvaluationRunStatus.RUNNING, caseSetVersion(EvaluationMode.AGENT), results,
-                    agentMetrics(), null);
-            repository.save(running);
-            return getRun(running.runId());
+            EvaluationRun running = buildRun(runId, EvaluationMode.AGENT, AGENT_ENVIRONMENT, startedAt, null,
+                    EvaluationRunStatus.RUNNING, caseSetVersion(EvaluationMode.AGENT), results, agentMetrics(), null);
+            if (!repository.saveOwned(running, evaluationLease.ownerId(), evaluationLease.activeFence())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "评测所有权在运行创建前已丢失，请重新发起评测");
+            }
+            persisted = true;
+            return getRun(runId);
         }
         catch (RuntimeException exception) {
-            agentRunActive.set(false);
+            if (!persisted) {
+                evaluationLease.release();
+            }
             throw exception;
         }
     }
@@ -650,10 +657,18 @@ public class AgentEvaluationService {
     }
 
     private synchronized EvaluationRun refreshAgentRun(EvaluationRun run) {
+        boolean owned = evaluationLease.ownsRun(run.runId()) ? evaluationLease.renew()
+                : evaluationLease.claim(run.runId());
+        if (!owned) {
+            // Another instance holds the live lease; returning the committed state is the only
+            // correct answer, because writing it would race with that owner.
+            return run;
+        }
         Instant now = Instant.now();
         boolean timeout = Duration.between(run.startedAt(), now).compareTo(AGENT_TIMEOUT) > 0;
         List<EvaluationCaseResult> updated = new ArrayList<>();
         boolean anyRunning = false;
+        boolean anyCancelled = false;
         for (EvaluationCaseResult result : run.results()) {
             if (result.status() != EvaluationCaseStatus.RUNNING) {
                 updated.add(result);
@@ -692,23 +707,33 @@ public class AgentEvaluationService {
                         result.observationJson(), "TASK_FAILED",
                         truncate(task.error() == null ? "任务失败" : task.error(), 900)));
             }
+            else if ("CANCELLED".equals(task.status())) {
+                anyCancelled = true;
+                updated.add(withStatus(result, EvaluationCaseStatus.UNDETERMINED, elapsed, List.of(),
+                        result.observationJson(), "TASK_CANCELLED",
+                        truncate(task.error() == null ? "任务已被取消" : task.error(), 900)));
+            }
             else {
                 anyRunning = true;
                 updated.add(withStatus(result, EvaluationCaseStatus.RUNNING, elapsed, result.assertions(),
                         result.observationJson(), null, null));
             }
         }
+        String failureReason = timeout ? TIMEOUT_FAILURE : (anyCancelled ? CANCELLED_FAILURE : null);
         EvaluationRunStatus status = anyRunning ? EvaluationRunStatus.RUNNING
-                : (timeout ? EvaluationRunStatus.FAILED : EvaluationRunStatus.COMPLETED);
-        String failureReason = timeout ? TIMEOUT_FAILURE : null;
+                : (failureReason == null ? EvaluationRunStatus.COMPLETED : EvaluationRunStatus.FAILED);
         EvaluationRun next = buildRun(run.runId(), run.mode(), run.environment(), run.startedAt(),
                 status == EvaluationRunStatus.RUNNING ? null : now, status,
                 run.datasetVersion() == null || run.datasetVersion().isBlank() ? caseSetVersion(run.mode())
                         : run.datasetVersion(),
                 updated, agentMetrics(), failureReason);
-        repository.save(next);
+        if (!repository.saveOwned(next, evaluationLease.ownerId(), evaluationLease.activeFence())) {
+            // The lease moved to another JVM between the renewal and this write.
+            evaluationLease.release();
+            return repository.find(run.runId()).orElse(next);
+        }
         if (status != EvaluationRunStatus.RUNNING) {
-            agentRunActive.set(false);
+            evaluationLease.release();
         }
         return next;
     }
@@ -735,7 +760,7 @@ public class AgentEvaluationService {
                     failureMessage = "决策结果不存在";
                 }
                 else {
-                    evaluateDecisionAssertions(definition, decision, assertions, observation);
+                    evaluateDecisionAssertions(definition, decision, runningResult.taskId(), assertions, observation);
                 }
             }
             else {
@@ -764,6 +789,11 @@ public class AgentEvaluationService {
             failureMessage = truncate(failed.stream().map(EvaluationAssertionResult::description)
                 .reduce((left, right) -> left + "；" + right)
                 .orElse("断言未通过"), 900);
+        }
+        List<String> notEvaluated = missingRequiredAssertions(definition.id(), assertions);
+        if (failureType == null && !notEvaluated.isEmpty()) {
+            failureType = "ASSERTION_NOT_EVALUATED";
+            failureMessage = truncate("案例声明的断言未执行，不能判定通过: " + notEvaluated, 900);
         }
         EvaluationCaseStatus status = failureType == null ? EvaluationCaseStatus.PASSED : EvaluationCaseStatus.FAILED;
         return new EvaluationCaseResult(definition.id(), definition.name(), definition.scenario(),
@@ -795,11 +825,21 @@ public class AgentEvaluationService {
                         expected.toString(), atRiskIds.toString(), containsAll));
             }
         });
-        if ("inventory".equals(definition.category())) {
+        if (requiresAssertion(definition.id(), "report-shortage")) {
             boolean hasShortage = report.atRiskOrders().stream().anyMatch(item -> item.inventoryShortage() > 0);
             assertions.add(new EvaluationAssertionResult("report-shortage", "风险订单中存在库存缺口", ">=1",
                     String.valueOf(report.atRiskOrders().stream().filter(item -> item.inventoryShortage() > 0).count()),
                     hasShortage));
+        }
+        if (requiresAssertion(definition.id(), "report-model-assisted")) {
+            assertions.add(new EvaluationAssertionResult("report-model-assisted", "报告由模型成功生成", "true",
+                    "modelAssisted=" + report.modelAssisted() + ", narrativeSource=" + report.narrativeSource(),
+                    report.modelAssisted()));
+        }
+        if (requiresAssertion(definition.id(), "report-model-completed")) {
+            long succeeded = successfulModelCompletions(taskId, "GENERATING_REPORT");
+            assertions.add(new EvaluationAssertionResult("report-model-completed", "报告阶段记录了成功的模型事件",
+                    ">=1", String.valueOf(succeeded), succeeded >= 1));
         }
         if (definition.id().equals("REPORT-FALLBACK-NO-MODEL")) {
             List<SupplyChainTaskEvent> events = workflowService.events(taskId);
@@ -813,7 +853,7 @@ public class AgentEvaluationService {
     }
 
     private void evaluateDecisionAssertions(EvaluationCaseDefinition definition, DecisionTaskResult decision,
-            List<EvaluationAssertionResult> assertions, Map<String, Object> observation) {
+            String taskId, List<EvaluationAssertionResult> assertions, Map<String, Object> observation) {
         int candidateCount = decision.comparison() == null || decision.comparison().candidates() == null ? 0
                 : decision.comparison().candidates().size();
         int recommendationCount = decision.recommendations() == null ? 0 : decision.recommendations().size();
@@ -845,6 +885,51 @@ public class AgentEvaluationService {
             assertions.add(new EvaluationAssertionResult("evidence", "存在证据、引用或工具调用", ">=1",
                     String.valueOf(evidenceCount), evidenceCount >= 1));
         }
+        observation.put("narrativeSource", decision.narrativeSource());
+        observation.put("fallbackUsed", decision.fallbackUsed());
+        if (requiresAssertion(definition.id(), "decision-model-assisted")) {
+            assertions.add(new EvaluationAssertionResult("decision-model-assisted", "决策结论由模型生成", "true",
+                    "modelAssisted=" + decision.modelAssisted() + ", narrativeSource=" + decision.narrativeSource()
+                            + ", fallbackUsed=" + decision.fallbackUsed(),
+                    decision.modelAssisted() && !decision.fallbackUsed()));
+        }
+        if (requiresAssertion(definition.id(), "decision-model-completed")) {
+            long succeeded = successfulModelCompletions(taskId, "DECISION_SUMMARY");
+            assertions.add(new EvaluationAssertionResult("decision-model-completed", "决策阶段记录了成功的模型事件",
+                    ">=1", String.valueOf(succeeded), succeeded >= 1));
+        }
+    }
+
+    /**
+     * Successful model participation, counted from the event trail rather than from task state. A
+     * {@code MODEL_STARTED} row only proves an attempt was made, and a response that arrived after the
+     * task had already reached a terminal state is recorded with status {@code CANCELLED} and ignored -
+     * so neither may satisfy a model-participation assertion.
+     */
+    private long successfulModelCompletions(String taskId, String stage) {
+        return workflowService.events(taskId).stream()
+            .filter(event -> SupplyChainEventType.MODEL_COMPLETED.equals(event.type()))
+            .filter(event -> stage.equals(event.stage()))
+            .filter(event -> SupplyChainEventStatus.COMPLETED.equals(event.status()))
+            .count();
+    }
+
+    private boolean requiresAssertion(String caseId, String assertionId) {
+        return catalog.workflowCase(caseId).map(workflow -> workflow.requiresAssertion(assertionId)).orElse(false);
+    }
+
+    /**
+     * Assertions the case declares are the contract of the run. When one of them was never
+     * produced - unknown category, missing evidence, changed assertion id - the case must fail
+     * instead of passing on the assertions that did happen to run.
+     */
+    private List<String> missingRequiredAssertions(String caseId, List<EvaluationAssertionResult> assertions) {
+        List<String> produced = assertions.stream().map(EvaluationAssertionResult::id).toList();
+        return catalog.workflowCase(caseId)
+            .map(workflow -> workflow.requiredAssertionIds().stream()
+                .filter(assertionId -> !produced.contains(assertionId))
+                .toList())
+            .orElse(List.of());
     }
 
     private EvaluationCaseResult withStatus(EvaluationCaseResult result, EvaluationCaseStatus status, long durationMs,

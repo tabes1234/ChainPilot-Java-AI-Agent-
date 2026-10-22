@@ -17,6 +17,7 @@ package com.alibaba.cloud.ai.dataagent.supplychain.repository;
 
 import com.alibaba.cloud.ai.dataagent.supplychain.model.SupplyChainTaskEvent;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -37,9 +38,13 @@ public class SupplyChainEventRepository {
 
     private static final String TABLE = "chainpilot_task_event";
 
+    private static final String TASK_TABLE = "chainpilot_analysis_task";
+
     private static final int MAX_SUMMARY_LENGTH = 500;
 
     private static final int MAX_ERROR_TYPE_LENGTH = 128;
+
+    private static final int MAX_APPEND_ATTEMPTS = 5;
 
     private static final RowMapper<SupplyChainTaskEvent> EVENT_MAPPER = (rs, row) -> {
         long duration = rs.getLong("duration_ms");
@@ -74,17 +79,32 @@ public class SupplyChainEventRepository {
         if (taskId == null || taskId.isBlank()) {
             throw new IllegalArgumentException("taskId must not be blank");
         }
-        Integer current = jdbc.queryForObject(
-                "SELECT COALESCE(MAX(sequence_no), 0) FROM " + TABLE + " WHERE task_id=?", Integer.class, taskId);
-        int sequence = (current == null ? 0 : current) + 1;
-        SupplyChainTaskEvent event = new SupplyChainTaskEvent(UUID.randomUUID().toString(), taskId, sequence,
-                type, stage, status, occurredAt, durationMs, truncate(summary, MAX_SUMMARY_LENGTH),
-                truncate(errorType, MAX_ERROR_TYPE_LENGTH));
-        jdbc.update("INSERT INTO " + TABLE + " (event_id, task_id, sequence_no, event_type, stage, status, "
-                        + "occurred_at, duration_ms, summary, error_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                event.eventId(), event.taskId(), event.sequence(), event.type(), event.stage(), event.status(),
-                event.occurredAt().toEpochMilli(), event.durationMs(), event.summary(), event.errorType());
-        return event;
+        for (int attempt = 0; attempt < MAX_APPEND_ATTEMPTS; attempt++) {
+            // Serialize all writers for a task on its parent row before touching the event index.
+            jdbc.queryForList("SELECT task_id FROM " + TASK_TABLE + " WHERE task_id=? FOR UPDATE", String.class,
+                    taskId);
+            // Locking read bypasses a stale REPEATABLE READ snapshot and serializes sequence allocation.
+            List<Integer> latest = jdbc.queryForList("SELECT sequence_no FROM " + TABLE
+                    + " WHERE task_id=? ORDER BY sequence_no DESC LIMIT 1 FOR UPDATE", Integer.class, taskId);
+            int sequence = latest.isEmpty() ? 1 : latest.get(0) + 1;
+            SupplyChainTaskEvent event = new SupplyChainTaskEvent(UUID.randomUUID().toString(), taskId, sequence,
+                    type, stage, status, occurredAt, durationMs, truncate(summary, MAX_SUMMARY_LENGTH),
+                    truncate(errorType, MAX_ERROR_TYPE_LENGTH));
+            try {
+                jdbc.update("INSERT INTO " + TABLE + " (event_id, task_id, sequence_no, event_type, stage, status, "
+                                + "occurred_at, duration_ms, summary, error_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        event.eventId(), event.taskId(), event.sequence(), event.type(), event.stage(),
+                        event.status(), event.occurredAt().toEpochMilli(), event.durationMs(), event.summary(),
+                        event.errorType());
+                return event;
+            }
+            catch (DuplicateKeyException exception) {
+                if (attempt == MAX_APPEND_ATTEMPTS - 1) {
+                    throw exception;
+                }
+            }
+        }
+        throw new IllegalStateException("Unable to append ChainPilot event after retries");
     }
 
     /** Single query per task; sequence ordering does not depend on timestamp resolution. */

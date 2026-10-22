@@ -128,23 +128,106 @@ class SupplyChainTaskRepositoryTest {
     }
 
 	@Test
-	void restartMarksInterruptedWorkAsFailedWithoutDeletingIt() {
+	void repositoryRecreationLeavesAnotherInstancesLiveLeaseUntouched() {
 		JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
-				"jdbc:h2:mem:chainpilot-restart;DB_CLOSE_DELAY=-1", "sa", ""));
+				"jdbc:h2:mem:chainpilot-ownership-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
 		SupplyChainTaskRepository beforeRestart = new SupplyChainTaskRepository(jdbc,
 				new ObjectMapper().findAndRegisterModules());
-		beforeRestart.create(new SupplyChainTaskStatus("interrupted-task", "ACCEPTED", "QUEUED", 0, null,
-				Instant.now()), "analysis in progress");
-		beforeRestart.update(new SupplyChainTaskStatus("interrupted-task", "RUNNING", "QUERYING_ORDERS", 0, null,
-				Instant.now()));
+		Instant now = Instant.now();
+		beforeRestart.create(new SupplyChainTaskStatus("live-task", "ACCEPTED", "QUEUED", 0, null, now),
+				"analysis in progress");
+		assertTrue(beforeRestart.claimTask("live-task", "jvm-a", beforeRestart.databaseNowMillis() + 600_000));
+		beforeRestart.update(new SupplyChainTaskStatus("live-task", "RUNNING", "QUERYING_ORDERS", 0, null, now));
 
 		SupplyChainTaskRepository afterRestart = new SupplyChainTaskRepository(jdbc,
 				new ObjectMapper().findAndRegisterModules());
 
-		SupplyChainTaskStatus recovered = afterRestart.findTask("interrupted-task").orElseThrow();
-		assertEquals("FAILED", recovered.status());
-		assertEquals("INTERRUPTED_BY_RESTART", recovered.currentStep());
-		assertTrue(recovered.error().contains("restarted"));
+		SupplyChainTaskStatus live = afterRestart.findTask("live-task").orElseThrow();
+		assertEquals("RUNNING", live.status());
+		assertEquals("QUERYING_ORDERS", live.currentStep());
+		assertTrue(afterRestart.findExpiredActiveTaskIds(afterRestart.databaseNowMillis()).isEmpty());
+		assertEquals(0, afterRestart.countActiveWithoutOwner());
+	}
+
+	@Test
+	void aTakeoverFencesTheFormerOwnerOutOfEveryWrite() {
+		SupplyChainTaskRepository repository = newRepository("fencing");
+		Instant now = Instant.now();
+		repository.create(new SupplyChainTaskStatus("fence-task", "ACCEPTED", "QUEUED", 0, null, now), "fence");
+		assertTrue(repository.claimTask("fence-task", "jvm-a", repository.databaseNowMillis() - 1));
+		long fenceA = repository.findFenceVersion("fence-task", "jvm-a").orElseThrow();
+		assertTrue(repository.updateOwned(running("fence-task", "STEP-1"), "jvm-a", fenceA));
+		assertFalse(repository.updateOwned(running("fence-task", "STEP-2"), "jvm-a", fenceA + 1));
+
+		assertTrue(repository.claimTask("fence-task", "jvm-b", repository.databaseNowMillis() + 600_000));
+		long fenceB = repository.findFenceVersion("fence-task", "jvm-b").orElseThrow();
+		assertTrue(fenceB > fenceA);
+		assertFalse(repository.claimTask("fence-task", "jvm-c", repository.databaseNowMillis() + 600_000));
+		assertFalse(repository.renewTaskLease("fence-task", "jvm-a", fenceA, repository.databaseNowMillis() + 600_000));
+		assertFalse(repository.updateOwned(running("fence-task", "STALE"), "jvm-a", fenceA));
+		assertFalse(repository.completeAnalysis("fence-task", report("fence-task"), "DONE", 0, "jvm-a", fenceA));
+		assertTrue(repository.updateOwned(running("fence-task", "STEP-3"), "jvm-b", fenceB));
+		assertEquals("STEP-3", repository.findTask("fence-task").orElseThrow().currentStep());
+		assertTrue(repository.completeAnalysis("fence-task", report("fence-task"), "DONE", 0, "jvm-b", fenceB));
+		assertEquals("COMPLETED", repository.findTask("fence-task").orElseThrow().status());
+	}
+
+	@Test
+	void onlyAnExpiredOwnedLeaseIsRecoverableAndOwnerlessTasksAreLeftAlone() {
+		SupplyChainTaskRepository repository = newRepository("expiry");
+		Instant now = Instant.now();
+		repository.create(new SupplyChainTaskStatus("expired-task", "ACCEPTED", "QUEUED", 0, null, now), "expired");
+		repository.create(new SupplyChainTaskStatus("ownerless-task", "ACCEPTED", "QUEUED", 0, null, now), "legacy");
+		repository.create(new SupplyChainTaskStatus("live-task", "ACCEPTED", "QUEUED", 0, null, now), "live");
+		assertTrue(repository.claimTask("expired-task", "jvm-dead", repository.databaseNowMillis() - 1));
+		assertTrue(repository.claimTask("live-task", "jvm-alive", repository.databaseNowMillis() + 600_000));
+
+		long dbNow = repository.databaseNowMillis();
+		assertEquals(List.of("expired-task"), repository.findExpiredActiveTaskIds(dbNow));
+		assertEquals(1, repository.countActiveWithoutOwner());
+		assertFalse(repository.failExpiredTask("ownerless-task", dbNow));
+		assertFalse(repository.failExpiredTask("live-task", dbNow));
+
+		assertTrue(repository.failExpiredTask("expired-task", dbNow));
+		SupplyChainTaskStatus failed = repository.findTask("expired-task").orElseThrow();
+		assertEquals("FAILED", failed.status());
+		assertEquals("LEASE_EXPIRED", failed.currentStep());
+		assertTrue(failed.error().contains("not re-executed"));
+		assertFalse(repository.failExpiredTask("expired-task", repository.databaseNowMillis()));
+		assertEquals("ACCEPTED", repository.findTask("ownerless-task").orElseThrow().status());
+		assertEquals("ACCEPTED", repository.findTask("live-task").orElseThrow().status());
+	}
+
+	@Test
+	void cancellationClearsOwnershipAndFencesTheCancelledTask() {
+		SupplyChainTaskRepository repository = newRepository("cancel-owner");
+		Instant now = Instant.now();
+		repository.create(new SupplyChainTaskStatus("cancel-owner-task", "ACCEPTED", "QUEUED", 0, null, now),
+				"cancel");
+		assertTrue(repository.claimTask("cancel-owner-task", "jvm-a", repository.databaseNowMillis() + 600_000));
+		long fenceA = repository.findFenceVersion("cancel-owner-task", "jvm-a").orElseThrow();
+
+		assertTrue(repository.cancelIfActive("cancel-owner-task"));
+
+		assertEquals("CANCELLED", repository.findTask("cancel-owner-task").orElseThrow().status());
+		assertEquals(0, repository.countActiveWithoutOwner());
+		assertFalse(repository.updateOwned(running("cancel-owner-task", "STALE"), "jvm-a", fenceA));
+		assertFalse(repository.claimTask("cancel-owner-task", "jvm-b", repository.databaseNowMillis() + 600_000));
+	}
+
+	private static SupplyChainTaskRepository newRepository(String database) {
+		JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
+				"jdbc:h2:mem:chainpilot-" + database + "-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+		return new SupplyChainTaskRepository(jdbc, new ObjectMapper().findAndRegisterModules());
+	}
+
+	private static SupplyChainTaskStatus running(String taskId, String step) {
+		return new SupplyChainTaskStatus(taskId, "RUNNING", step, 0, null, Instant.now());
+	}
+
+	private static RiskAnalysisReport report(String taskId) {
+		return new RiskAnalysisReport(taskId, "COMPLETED", "done", List.of(), false, List.of(), List.of(),
+				List.of(), List.of(), false, 0, Instant.now());
 	}
 
 	@Test

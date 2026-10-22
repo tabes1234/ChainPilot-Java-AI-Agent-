@@ -44,23 +44,34 @@ public class EvaluationCatalog {
             new WorkflowEvaluationCase("WF-ANALYSIS-HIGH-RISK", "高风险订单分析",
                     "真实工作流：高风险订单分析", "请分析当前供应链中的高风险订单，并给出需要优先处理的建议。", "ANALYSIS",
                     "真实执行分析任务并生成包含风险订单的报告",
-                    List.of("任务状态为 COMPLETED", "生成分析报告", "报告包含至少 1 个风险订单")),
+                    List.of("任务状态为 COMPLETED", "生成分析报告", "报告包含至少 1 个风险订单", "报告由模型成功生成"),
+                    List.of("report-exists", "task-completed", "report-at-risk", "report-model-assisted",
+                            "report-model-completed")),
             new WorkflowEvaluationCase("WF-ANALYSIS-INVENTORY-SHORTAGE", "库存缺口分析",
                     "真实工作流：库存缺口分析", "哪些订单存在库存缺口？请说明受影响的 SKU 和缺口数量。", "ANALYSIS",
                     "真实执行分析任务，报告中的风险订单应包含库存缺口",
-                    List.of("任务状态为 COMPLETED", "生成分析报告", "风险订单中存在库存缺口")),
+                    List.of("任务状态为 COMPLETED", "生成分析报告", "风险订单中存在库存缺口", "报告由模型成功生成"),
+                    List.of("report-exists", "task-completed", "report-at-risk", "report-shortage",
+                            "report-model-assisted", "report-model-completed")),
             new WorkflowEvaluationCase("WF-DECISION-COMPARE", "候选方案比较",
                     "真实工作流：决策候选方案比较", "请比较补货与催交付两类处置方案，给出推荐方案和理由。", "DECISION",
                     "真实执行决策任务，返回确定性排名的候选方案比较",
-                    List.of("决策结果可读取", "包含至少 2 个候选方案", "未修改真实业务数据")),
+                    List.of("决策结果可读取", "包含至少 2 个候选方案", "未修改真实业务数据", "决策结论由模型生成"),
+                    List.of("decision-exists", "real-data-mutated", "comparison-exists", "decision-model-assisted",
+                            "decision-model-completed")),
+            // 该案例的意图由确定性解析器识别，设计上不调用模型，所以只声明护栏断言，
+            // 不声明模型参与断言：它证明的是"不伪造业务结果"，不能用来证明模型可用。
             new WorkflowEvaluationCase("WF-DECISION-UNSUPPORTED", "不支持请求处理",
                     "真实工作流：不支持的业务请求", "帮我写一首关于春天的诗。", "DECISION",
                     "不支持的请求应被明确识别，不得伪造业务结果",
-                    List.of("决策结果可读取", "标记为不支持或需要澄清", "未修改真实业务数据")),
+                    List.of("决策结果可读取", "标记为不支持或需要澄清", "未修改真实业务数据"),
+                    List.of("decision-exists", "real-data-mutated", "unsupported-or-clarify")),
             new WorkflowEvaluationCase("WF-DECISION-EVIDENCE", "决策证据完整性",
                     "真实工作流：决策证据与工具调用", "针对当前高风险订单生成处置建议，并列出你的依据。", "DECISION",
                     "决策结果应包含处置建议以及可追溯的依据",
-                    List.of("决策结果可读取", "至少 1 条处置建议", "存在证据、引用或工具调用")));
+                    List.of("决策结果可读取", "至少 1 条处置建议", "存在证据、引用或工具调用", "决策结论由模型生成"),
+                    List.of("decision-exists", "real-data-mutated", "recommendations", "evidence",
+                            "decision-model-assisted", "decision-model-completed")));
 
     private final SupplyChainEvaluationDataset dataset;
 

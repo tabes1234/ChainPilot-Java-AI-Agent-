@@ -30,6 +30,7 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /** Persists demo analysis jobs and reports in the application's configured SQL database. */
@@ -67,13 +69,52 @@ public class SupplyChainTaskRepository {
                 + "status VARCHAR(24) NOT NULL, current_step VARCHAR(64) NOT NULL, "
                 + "validation_attempts INTEGER NOT NULL, error_message VARCHAR(1000), "
                 + "updated_at BIGINT NOT NULL, report_json TEXT, "
-                + "task_type VARCHAR(24) NOT NULL DEFAULT 'ANALYSIS', decision_json TEXT)");
+                + "task_type VARCHAR(24) NOT NULL DEFAULT 'ANALYSIS', decision_json TEXT, "
+                + "owner_instance_id VARCHAR(64), lease_expires_at BIGINT, "
+                + "fence_version BIGINT NOT NULL DEFAULT 0)");
         ensureColumn("task_type", "VARCHAR(24) NOT NULL DEFAULT 'ANALYSIS'");
         ensureColumn("decision_json", "TEXT");
-        // A process restart cannot resume an in-flight Graph invocation. Make this explicit in history.
-        jdbc.update("UPDATE " + TABLE + " SET status='FAILED', current_step='INTERRUPTED_BY_RESTART', "
-                + "error_message='Application restarted before analysis completed', updated_at=? "
-                + "WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED')", Instant.now().toEpochMilli());
+        ensureColumn("owner_instance_id", "VARCHAR(64)");
+        ensureColumn("lease_expires_at", "BIGINT");
+        ensureColumn("fence_version", "BIGINT NOT NULL DEFAULT 0");
+    }
+
+    /** Uses the database clock so leases are comparable across JVMs with skewed clocks. */
+    public long databaseNowMillis() {
+        Timestamp timestamp = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", Timestamp.class);
+        if (timestamp == null) {
+            throw new IllegalStateException("Database returned no current timestamp");
+        }
+        return timestamp.getTime();
+    }
+
+    /**
+     * Atomically acquires ownership. An active owner cannot be displaced before its
+     * lease expires; a same-owner re-claim is allowed for restart/retry bookkeeping.
+     */
+    public boolean claimTask(String taskId, String owner, long leaseExpiresAt) {
+        long now = databaseNowMillis();
+        return jdbc.update("UPDATE " + TABLE + " SET owner_instance_id=?, lease_expires_at=?, "
+                        + "fence_version=fence_version+1, updated_at=? "
+                        + "WHERE task_id=? AND status IN ('ACCEPTED','RUNNING') "
+                        + "AND (owner_instance_id IS NULL OR owner_instance_id=? "
+                        + "OR lease_expires_at IS NULL OR lease_expires_at < ?)",
+                owner, leaseExpiresAt, now, taskId, owner, now) > 0;
+    }
+
+    public OptionalLong findFenceVersion(String taskId, String owner) {
+        List<Long> values = jdbc.queryForList(
+                "SELECT fence_version FROM " + TABLE + " WHERE task_id=? AND owner_instance_id=?",
+                Long.class, taskId, owner);
+        return values.isEmpty() || values.get(0) == null ? OptionalLong.empty()
+                : OptionalLong.of(values.get(0));
+    }
+
+    public boolean renewTaskLease(String taskId, String owner, long fenceVersion, long leaseExpiresAt) {
+        return jdbc.update("UPDATE " + TABLE + " SET lease_expires_at=? "
+                        + "WHERE task_id=? AND owner_instance_id=? AND fence_version=? "
+                        + "AND status IN ('ACCEPTED','RUNNING')",
+                leaseExpiresAt, taskId, owner, fenceVersion) > 0;
     }
 
     /** Adds a column to databases created by an earlier release; CREATE TABLE IF NOT EXISTS skips them. */
@@ -115,21 +156,43 @@ public class SupplyChainTaskRepository {
                 status.updatedAt().toEpochMilli(), status.taskId());
     }
 
-    /** Atomically cancels only an active task; terminal tasks keep their existing outcome. */
+    /** Worker updates are fenced: an old owner cannot overwrite a newer owner's task. */
+    public boolean updateOwned(SupplyChainTaskStatus status, String owner, long fenceVersion) {
+        return jdbc.update("UPDATE " + TABLE + " SET status=?, current_step=?, validation_attempts=?, "
+                        + "error_message=?, updated_at=? WHERE task_id=? AND owner_instance_id=? "
+                        + "AND fence_version=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",
+                status.status(), status.currentStep(), status.validationAttempts(), status.error(),
+                status.updatedAt().toEpochMilli(), status.taskId(), owner, fenceVersion) > 0;
+    }
+
+    /** Atomically cancels only an active task; cancellation is allowed from any instance. */
     public boolean cancelIfActive(String taskId) {
         return jdbc.update("UPDATE " + TABLE + " SET status='CANCELLED', current_step='CANCELLED', "
-                        + "error_message='Cancelled by user', updated_at=? "
+                        + "error_message='Cancelled by user', updated_at=?, owner_instance_id=NULL, "
+                        + "lease_expires_at=NULL, fence_version=fence_version+1 "
                         + "WHERE task_id=? AND status IN ('ACCEPTED','RUNNING')",
                 Instant.now().toEpochMilli(), taskId) > 0;
     }
 
     /** Completion and payload persistence share one conditional statement, so cancellation wins or success wins. */
     public boolean completeAnalysis(String taskId, RiskAnalysisReport report, String step, int attempts) {
+        return completeAnalysis(taskId, report, step, attempts, null, null);
+    }
+
+    public boolean completeAnalysis(String taskId, RiskAnalysisReport report, String step, int attempts,
+            String owner, Long fenceVersion) {
         try {
-            return jdbc.update("UPDATE " + TABLE + " SET status='COMPLETED', current_step=?, validation_attempts=?, "
-                            + "error_message=NULL, updated_at=?, report_json=? "
-                            + "WHERE task_id=? AND task_type='ANALYSIS' AND status IN ('ACCEPTED','RUNNING')",
-                    step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(report), taskId) > 0;
+            String ownerClause = owner == null ? "" : " AND owner_instance_id=? AND fence_version=?";
+            Object[] parameters = owner == null
+                    ? new Object[] { step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(report),
+                            taskId }
+                    : new Object[] { step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(report),
+                            taskId, owner, fenceVersion };
+            return jdbc.update("UPDATE " + TABLE + " SET status='COMPLETED', current_step=?, "
+                            + "validation_attempts=?, error_message=NULL, updated_at=?, report_json=? "
+                            + "WHERE task_id=? AND task_type='ANALYSIS' AND status IN ('ACCEPTED','RUNNING')"
+                            + ownerClause,
+                    parameters) > 0;
         }
         catch (JsonProcessingException exception) {
             throw new IllegalStateException("Unable to persist ChainPilot report", exception);
@@ -137,15 +200,56 @@ public class SupplyChainTaskRepository {
     }
 
     public boolean completeDecision(String taskId, DecisionTaskResult result, String step, int attempts) {
+        return completeDecision(taskId, result, step, attempts, null, null);
+    }
+
+    public boolean completeDecision(String taskId, DecisionTaskResult result, String step, int attempts,
+            String owner, Long fenceVersion) {
         try {
-            return jdbc.update("UPDATE " + TABLE + " SET status='COMPLETED', current_step=?, validation_attempts=?, "
-                            + "error_message=NULL, updated_at=?, decision_json=? "
-                            + "WHERE task_id=? AND task_type='DECISION' AND status IN ('ACCEPTED','RUNNING')",
-                    step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(result), taskId) > 0;
+            String ownerClause = owner == null ? "" : " AND owner_instance_id=? AND fence_version=?";
+            Object[] parameters = owner == null
+                    ? new Object[] { step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(result),
+                            taskId }
+                    : new Object[] { step, attempts, Instant.now().toEpochMilli(), mapper.writeValueAsString(result),
+                            taskId, owner, fenceVersion };
+            return jdbc.update("UPDATE " + TABLE + " SET status='COMPLETED', current_step=?, "
+                            + "validation_attempts=?, error_message=NULL, updated_at=?, decision_json=? "
+                            + "WHERE task_id=? AND task_type='DECISION' AND status IN ('ACCEPTED','RUNNING')"
+                            + ownerClause,
+                    parameters) > 0;
         }
         catch (JsonProcessingException exception) {
             throw new IllegalStateException("Unable to persist ChainPilot decision result", exception);
         }
+    }
+
+    /** Returns active tasks whose database lease has expired; ownerless legacy rows are excluded. */
+    public List<String> findExpiredActiveTaskIds(long nowMillis) {
+        return jdbc.query("SELECT task_id FROM " + TABLE
+                        + " WHERE status IN ('ACCEPTED','RUNNING') AND owner_instance_id IS NOT NULL "
+                        + "AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+                (rs, row) -> rs.getString(1), nowMillis);
+    }
+
+    /**
+     * Marks one expired task failed exactly once while preserving terminal state races. The
+     * caller appends the failure event in the same transaction.
+     */
+    public boolean failExpiredTask(String taskId, long nowMillis) {
+        return jdbc.update("UPDATE " + TABLE + " SET status='FAILED', current_step='LEASE_EXPIRED', "
+                        + "error_message='Task lease expired without a live owner; not re-executed', "
+                        + "updated_at=?, owner_instance_id=NULL, lease_expires_at=NULL, "
+                        + "fence_version=fence_version+1 "
+                        + "WHERE task_id=? AND status IN ('ACCEPTED','RUNNING') "
+                        + "AND owner_instance_id IS NOT NULL AND lease_expires_at IS NOT NULL "
+                        + "AND lease_expires_at < ?",
+                nowMillis, taskId, nowMillis) > 0;
+    }
+
+    public long countActiveWithoutOwner() {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM " + TABLE
+                + " WHERE status IN ('ACCEPTED','RUNNING') AND owner_instance_id IS NULL", Long.class);
+        return count == null ? 0 : count;
     }
 
     public List<SupplyChainTaskSummary> findRecent(int limit) {
