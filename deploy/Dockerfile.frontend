@@ -1,0 +1,34 @@
+# ChainPilot Next.js frontend image (Next 16 / React 19).
+# Build context: repository root.
+#   docker build -f deploy/Dockerfile.frontend \
+#     --build-arg CHAINPILOT_BACKEND_URL=https://your-backend.example \
+#     -t chainpilot-frontend .
+# CHAINPILOT_BACKEND_URL is baked into the /api and /uploads rewrites at build time.
+FROM node:22-alpine AS build
+WORKDIR /app
+
+COPY data-agent-frontend-next/package.json data-agent-frontend-next/package-lock.json ./
+RUN npm ci
+
+COPY data-agent-frontend-next/ ./
+
+ARG CHAINPILOT_BACKEND_URL=http://127.0.0.1:8065
+ENV CHAINPILOT_BACKEND_URL=$CHAINPILOT_BACKEND_URL \
+    NEXT_TELEMETRY_DISABLED=1
+
+RUN npm run build
+
+FROM node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000
+
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/next.config.ts ./next.config.ts
+
+EXPOSE 3000
+CMD ["npx", "next", "start", "-p", "3000"]

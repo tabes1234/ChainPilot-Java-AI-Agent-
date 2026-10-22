@@ -1,0 +1,26 @@
+# ChainPilot backend image (Spring Boot 3.4.8 / Java 17).
+# Build context: repository root.
+#   docker build -f deploy/Dockerfile.backend -t chainpilot-backend .
+# Default profile is h2 (file DB under /app/data). For MySQL pass SPRING_PROFILES_ACTIVE=mysql
+# and DATA_AGENT_DATASOURCE_* env vars; no code change is required.
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /build
+
+COPY pom.xml ./
+COPY data-agent-management/pom.xml data-agent-management/
+RUN mvn -q -pl data-agent-management -am dependency:go-offline -DskipTests || true
+
+COPY data-agent-management/src data-agent-management/src
+RUN mvn -q -pl data-agent-management -am package -DskipTests -Djacoco.skip=true
+
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+
+COPY --from=build /build/data-agent-management/target/chainpilot-management-1.0.0-SNAPSHOT.jar app.jar
+
+ENV SPRING_PROFILES_ACTIVE=h2 \
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70 -Dfile.encoding=UTF-8" \
+    TZ=Asia/Shanghai
+
+EXPOSE 8065
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_TOOL_OPTIONS -jar app.jar"]
