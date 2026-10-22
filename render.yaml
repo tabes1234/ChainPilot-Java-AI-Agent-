@@ -1,0 +1,42 @@
+# Render Blueprint — ChainPilot 免费公网部署
+#
+# 使用方式：在 https://dashboard.render.com 选择 New + → Blueprint，
+# 授权 GitHub 后选择本仓库（tabes1234/ChainPilot-Java-AI-Agent-），
+# Render 会读取本文件自动创建两个免费 Web Service：
+#
+#   chainpilot-backend  — Spring Boot 3.4.8 / Java 17，H2 文件库，/echo/ok 健康检查
+#   chainpilot-frontend — Next.js 16，构建时注入后端地址，反代 /api 与 /uploads
+#
+# 免费层限制（Render 政策，可能随官方调整）：512MB 内存、15 分钟无流量休眠、
+# 休眠期间 H2 文件数据保留但实例重启后进程内状态清空。
+# 若后端 OOM，请升级到 Starter（付费）或改用外部免费 MySQL（如 Aiven）并
+# 将 SPRING_PROFILES_ACTIVE 换成 mysql 并补 DATA_AGENT_DATASOURCE_* 环境变量。
+
+services:
+  - type: web
+    name: chainpilot-backend
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile.backend
+    plan: free
+    healthCheckPath: /echo/ok
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: h2
+      - key: JAVA_TOOL_OPTIONS
+        value: -XX:MaxRAMPercentage=75
+
+  - type: web
+    name: chainpilot-frontend
+    runtime: node
+    rootDir: data-agent-frontend-next
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: CHAINPILOT_BACKEND_URL
+        value: https://chainpilot-backend.onrender.com
+      - key: NEXT_PUBLIC_CHAINPILOT_DEMO_MODE
+        value: "true"
