@@ -12,6 +12,7 @@ import { RecommendationDetails } from '@/components/supply-chain/recommendation-
 import { RiskEvidencePanel } from '@/components/supply-chain/risk-evidence';
 import { FeedbackDialog } from '@/components/supply-chain/feedback-dialog';
 import { errorMessage } from '@/lib/api/client';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import {
 	cancelProposal,
 	confirmProposal,
@@ -30,8 +31,16 @@ const ACTION_LABELS: Record<ProposalAction, string> = {
 
 export function DecisionView({ decision, onChanged }: { decision: DecisionResult; onChanged: () => void }) {
 	const proposals = decision.proposals ?? [];
+	const guardDemo = useDemoGuard();
 	const [pending, setPending] = useState<{ proposal: Proposal; kind: 'confirm' | 'cancel' } | null>(null);
 	const [busy, setBusy] = useState(false);
+
+	const comparison = decision.comparison ?? null;
+	const recommendation = comparison?.recommendation ?? null;
+	const recRanking = comparison?.rankings?.find((ranking) => ranking.recommended) ?? null;
+	const recCandidate =
+		comparison?.candidates?.find((candidate) => candidate.candidateId === (recommendation?.recommendedCandidateId ?? recRanking?.candidateId)) ?? null;
+	const recSim = recCandidate?.simulation ?? null;
 
 	const run = async () => {
 		if (!pending) return;
@@ -59,8 +68,6 @@ export function DecisionView({ decision, onChanged }: { decision: DecisionResult
 				actions={
 					<div className="flex flex-wrap gap-1.5">
 						<StatusBadge status={decision.status} />
-						{decision.intent && <BadgeText label={`意图 ${decision.intent}`} />}
-						{decision.narrativeSource && <BadgeText label={decision.narrativeSource} />}
 						<BadgeText label={decision.modelAssisted ? '模型参与' : '确定性结果'} />
 						{decision.fallbackUsed && <BadgeText label="模型降级" />}
 						<BadgeText label={decision.realDataMutated ? '数据已变更' : '真实数据未变更'} />
@@ -69,100 +76,96 @@ export function DecisionView({ decision, onChanged }: { decision: DecisionResult
 				}
 			>
 				<div className="space-y-3">
-					<p className="whitespace-pre-wrap text-sm leading-relaxed text-[#1c3048]">{decision.summary || '后端未返回摘要。'}</p>
+					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-[#1c3048]">{decision.summary || '后端未返回摘要。'}</p>
 					<div className="grid gap-3 sm:grid-cols-3">
-						<Field label="任务 ID" value={<span className="font-mono text-xs">{decision.taskId}</span>} />
 						<Field label="生成时间" value={formatTime(decision.createdAt)} />
+						<Field label="叙述来源" value={decision.narrativeSource ?? '—'} />
 						<Field label="需澄清" value={decision.clarificationRequired ? '是' : '否'} />
 					</div>
+					{decision.intent && <p className="text-xs text-[#5a708c]">识别意图：{decision.intent}</p>}
 					{decision.clarificationRequired && <BulletList items={decision.clarifications} empty="无澄清项" />}
 				</div>
 			</Section>
 
-			<Section
-				title="处置追溯链"
-				description="生成建议不等于执行；以下状态均来自后端任务、提案、方案和执行记录"
-			>
-				<div className="grid gap-3 sm:grid-cols-4">
-					<Field label="决策任务" value={<span className="font-mono text-xs">{decision.taskId}</span>} />
-					<Field
-						label="提案"
-						value={proposals.length === 0 ? '当前无提案' : `${proposals.length} 条 · ${proposals.map((item) => item.status).join(' / ')}`}
-					/>
-					<Field
-						label="关联方案"
-						value={decision.plan ? <span className="inline-flex flex-wrap items-center gap-1"><StatusBadge status={decision.plan.status} /> <span className="font-mono text-xs">{decision.plan.planId}</span></span> : '尚未生成'}
-					/>
-					<Field
-						label="沙箱执行"
-						value={decision.execution
-							? <span className="inline-flex flex-wrap items-center gap-1"><StatusBadge status={decision.execution.status} /><span className="text-xs">{decision.execution.mode ?? 'SANDBOX'}</span></span>
-							: '尚未执行'}
-					/>
-				</div>
-				<div className="mt-2 flex flex-wrap gap-2 text-xs">
-					{decision.plan && (
-						<Link href={`/supply-chain/disposal?planId=${encodeURIComponent(decision.plan.planId)}&taskId=${encodeURIComponent(decision.taskId)}`} className="font-medium text-[#35629d] hover:underline">
-							查看处置方案与执行记录
-						</Link>
-					)}
-					<Link href="/supply-chain/history" className="font-medium text-[#35629d] hover:underline">
-						在任务历史中查看审计记录
-					</Link>
-				</div>
-			</Section>
-
-			{decision.comparison && (
-				<Section title="方案对比" description={`基线来源：${decision.comparison.baselineSource ?? '—'} · 真实数据未变更`}>
-					<div className="space-y-3">
-						<div className="grid gap-2 sm:grid-cols-4">
-							<Metric label="基线风险订单" value={decision.comparison.baseline?.atRiskOrders ?? '—'} />
-							<Metric label="基线缺口总量" value={decision.comparison.baseline?.totalShortageUnits ?? '—'} />
-							<Metric label="最佳风险订单变化" value={signed(decision.comparison.bestAtRiskOrdersDelta)} />
-							<Metric label="最佳缺口变化" value={signed(decision.comparison.bestTotalShortageUnitsDelta)} />
+			{recommendation && (
+				<Section title="推荐结果" description="由 Java 确定性规则引擎排名产生；排名第一不等于业务授权，需人工确认后才会进入提案">
+					<div className="rounded-xl bg-[#f0f7fd] p-4 ring-1 ring-[#bcd6ee]">
+						<div className="flex flex-wrap items-center gap-2">
+							<span className="text-[17px] font-semibold text-[#1c3048]">推荐方案：{recommendation.recommendedLabel ?? recRanking?.label ?? '—'}</span>
+							{(recommendation.recommendedRank ?? recRanking?.rank) != null && (
+								<BadgeText label={`排名第 ${recommendation.recommendedRank ?? recRanking?.rank} 名`} />
+							)}
+							{recommendation.outcome && <Badge variant="outline">{recommendation.outcome}</Badge>}
 						</div>
-						{decision.comparison.recommendation && (
-							<div className="rounded-lg border border-[#dbe6f2] bg-[#f8fbfe] p-3 text-sm">
-								<div className="flex flex-wrap items-center gap-2">
-									<BadgeText label={`结果 ${decision.comparison.recommendation.outcome ?? '—'}`} />
-									{decision.comparison.recommendation.recommendedLabel && (
-										<span className="font-semibold text-[#1c3048]">推荐：{decision.comparison.recommendation.recommendedLabel}</span>
-									)}
-								</div>
-								{decision.comparison.recommendation.summary && (
-									<p className="mt-1.5 whitespace-pre-wrap text-[#33506b]">{decision.comparison.recommendation.summary}</p>
-								)}
-							</div>
-						)}
-						<div className="overflow-x-auto">
+						<div className="mt-3 grid gap-2 sm:grid-cols-3">
+							<Metric label="缺口总量变化" value={signed(recSim?.delta?.totalShortageUnits)} hint="模拟后缺口 − 基线缺口" />
+							<Metric label="模拟 ATP" value={recSim?.simulated?.targetSkuAvailableToPromise ?? '—'} hint={`当前目标 SKU ATP ${comparison?.baseline?.targetSkuAvailableToPromise ?? '—'} 件`} />
+							<Metric label="基线缺口总量" value={comparison?.baseline?.totalShortageUnits ?? '—'} hint={`基线风险订单 ${comparison?.baseline?.atRiskOrders ?? '—'} 个`} />
+						</div>
+						{recommendation.summary && <p className="mt-2.5 whitespace-pre-wrap break-words text-sm text-[#33506b]">{recommendation.summary}</p>}
+						{recommendation.disclaimer && <p className="mt-2 text-xs text-[#7a5a22]">{recommendation.disclaimer}</p>}
+					</div>
+				</Section>
+			)}
+
+			{comparison && (
+				<Section title="方案对比" description={`基线来源：${comparison.baselineSource ?? '—'} · 真实数据未变更`}>
+					<div className="space-y-3">
+						<div className="hidden sm:block">
 							<table className="w-full text-sm">
 								<thead>
 									<tr className="border-b border-[#e2e8f0] text-left text-xs text-[#5a708c]">
 										<th className="py-1.5 pr-3">候选</th>
 										<th className="py-1.5 pr-3">排名</th>
 										<th className="py-1.5 pr-3">参数</th>
-										<th className="py-1.5 pr-3">关键变化</th>
-										<th className="py-1.5">已关联方案</th>
+										<th className="py-1.5 pr-3">缺口变化</th>
+										<th className="py-1.5 pr-3">模拟 ATP</th>
+										<th className="py-1.5">关键变化</th>
 									</tr>
 								</thead>
 								<tbody>
-									{(decision.comparison.rankings ?? []).map((ranking) => {
-										const candidate = decision.comparison?.candidates?.find((item) => item.candidateId === ranking.candidateId);
+									{(comparison.rankings ?? []).map((ranking) => {
+										const candidate = comparison.candidates?.find((item) => item.candidateId === ranking.candidateId);
 										return (
-											<tr key={ranking.candidateId} className="border-b border-[#f1f5f9]">
-												<td className="py-1.5 pr-3">
+											<tr key={ranking.candidateId} className={`border-b border-[#f1f5f9] ${ranking.recommended ? 'bg-[#f0f7fd]' : ''}`}>
+												<td className="py-1.5 pr-3 font-medium">
 													{ranking.label ?? ranking.candidateId}
 													{ranking.recommended && <span className="ml-1 text-xs text-[#428766]">（推荐）</span>}
 												</td>
 												<td className="py-1.5 pr-3">{ranking.rank ?? '不可比'}</td>
 												<td className="py-1.5 pr-3 text-xs text-[#5a708c]">{ranking.parameterSummary ?? '—'}</td>
-												<td className="py-1.5 pr-3 text-xs">{(ranking.keyDeltas ?? []).join('；') || '—'}</td>
-												<td className="py-1.5 text-xs">{candidate?.linkedPlanId ?? '—'}</td>
+												<td className={`py-1.5 pr-3 font-medium ${(candidate?.simulation?.delta?.totalShortageUnits ?? 0) < 0 ? 'text-[#428766]' : ''}`}>
+													{signed(candidate?.simulation?.delta?.totalShortageUnits)}
+												</td>
+												<td className="py-1.5 pr-3">{candidate?.simulation?.simulated?.targetSkuAvailableToPromise ?? '—'}</td>
+												<td className="py-1.5 text-xs">{(ranking.keyDeltas ?? []).join('；') || '—'}</td>
 											</tr>
 										);
 									})}
 								</tbody>
 							</table>
+						</div>
+						<div className="space-y-2 sm:hidden">
+							{(comparison.rankings ?? []).map((ranking) => {
+								const candidate = comparison.candidates?.find((item) => item.candidateId === ranking.candidateId);
+								return (
+									<div key={ranking.candidateId} className={`rounded-xl px-3 py-2.5 ring-1 ${ranking.recommended ? 'bg-[#f0f7fd] ring-[#bcd6ee]' : 'bg-white/60 ring-white/70'}`}>
+										<div className="flex flex-wrap items-center justify-between gap-2">
+											<span className="text-sm font-semibold text-[#1c3048]">
+												{ranking.label ?? ranking.candidateId}
+												{ranking.recommended && <span className="ml-1 text-xs text-[#428766]">（推荐）</span>}
+											</span>
+											<span className="text-xs text-[#5a708c]">排名 {ranking.rank ?? '不可比'}</span>
+										</div>
+										<p className="mt-1 text-xs text-[#5a708c]">{ranking.parameterSummary ?? '—'}</p>
+										<div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-[#33506b]">
+											<span>缺口变化 {signed(candidate?.simulation?.delta?.totalShortageUnits)}</span>
+											<span>模拟 ATP {candidate?.simulation?.simulated?.targetSkuAvailableToPromise ?? '—'}</span>
+										</div>
+										{(ranking.keyDeltas ?? []).length > 0 && <p className="mt-1 text-xs text-[#5a708c]">{(ranking.keyDeltas ?? []).join('；')}</p>}
+									</div>
+								);
+							})}
 						</div>
 					</div>
 				</Section>
@@ -194,73 +197,146 @@ export function DecisionView({ decision, onChanged }: { decision: DecisionResult
 				</Section>
 			)}
 
-			<div className="grid gap-4 lg:grid-cols-2">
-				<Section title="处置建议" description={`${decision.recommendations?.length ?? 0} 条确定性建议`}>
-					{(decision.recommendations ?? []).length === 0 ? (
-						<p className="text-sm text-[#5a708c]">本次决策未生成处置建议。</p>
-					) : (
-						<div className="space-y-2">
-							{(decision.recommendations ?? []).map((recommendation) => (
-								<div key={recommendation.recommendationId} className="rounded-lg border border-[#e2e8f0] p-2.5">
-									<div className="flex flex-wrap items-center gap-1.5">
-										<span className="font-medium text-[#1c3048]">{recommendation.title}</span>
-										<BadgeText label={recommendation.priority} />
-										<RiskBadge level={recommendation.riskLevel} />
-									</div>
-									<p className="mt-1 text-xs text-[#5a708c]">{recommendation.action}</p>
-									<RecommendationDetails recommendation={recommendation} />
+			<Section title="处置建议" description={`${decision.recommendations?.length ?? 0} 条确定性建议`}>
+				{(decision.recommendations ?? []).length === 0 ? (
+					<p className="text-sm text-[#5a708c]">本次决策未生成处置建议。</p>
+				) : (
+					<div className="space-y-2">
+						{(decision.recommendations ?? []).map((recommendation) => (
+							<div key={recommendation.recommendationId} className="rounded-lg border border-[#e2e8f0] p-2.5">
+								<div className="flex flex-wrap items-center gap-1.5">
+									<span className="font-medium text-[#1c3048]">{recommendation.title}</span>
+									<BadgeText label={recommendation.priority} />
+									<RiskBadge level={recommendation.riskLevel} />
 								</div>
-							))}
-						</div>
-					)}
-				</Section>
-				<Section title="分析依据">
-					<BulletList items={decision.evidenceNotes} empty="后端未返回补充依据。" />
-					{(decision.citations ?? []).length > 0 && (
-						<div className="mt-3 space-y-1">
-							{(decision.citations ?? []).map((citation) => (
-								<p key={citation.sourceId} className="text-xs text-[#5a708c]">
-									<span className="font-medium text-[#33506b]">{citation.title}</span>：{citation.excerpt}
-								</p>
-							))}
-						</div>
-					)}
-				</Section>
-			</div>
+								<p className="mt-1 text-xs text-[#5a708c]">{recommendation.action}</p>
+								<RecommendationDetails recommendation={recommendation} />
+							</div>
+						))}
+					</div>
+				)}
+			</Section>
 
-			{decision.plan && (
-				<Section
-					title="关联处置方案"
-					actions={<Link href={`/supply-chain/disposal?planId=${encodeURIComponent(decision.plan.planId)}&taskId=${encodeURIComponent(decision.taskId)}`}><Button size="sm" variant="outline">打开处置工作台</Button></Link>}
-				>
-					<div className="grid gap-3 sm:grid-cols-3">
-						<Field label="方案 ID" value={<span className="font-mono text-xs">{decision.plan.planId}</span>} />
-						<Field label="标题" value={decision.plan.title} />
-						<Field label="状态" value={<StatusBadge status={decision.plan.status} />} />
-						<Field label="关联任务" value={<span className="font-mono text-xs">{decision.plan.taskId ?? decision.taskId}</span>} />
-						<Field label="用户选定建议" value={decision.plan.selectedRecommendationId ?? '尚未选择'} />
-						<Field label="创建时间" value={formatTime(decision.plan.createdAt)} />
-						<Field label="状态更新时间" value={formatTime(decision.plan.updatedAt)} />
+			{(recommendation?.reasons?.length || recommendation?.tradeoffs?.length || recommendation?.unknowns?.length || recommendation?.manualConfirmation?.length || comparison?.rankingRules?.length || (decision.evidenceNotes ?? []).length > 0) ? (
+				<Section title="分析依据与权衡" description="默认收起；展开查看完整规则、权衡与人工确认清单">
+					<div className="space-y-2">
+						{(comparison?.rankingRules ?? []).length > 0 && (
+							<CollapsiblePanel title="候选排序规则" count={comparison?.rankingRules?.length}>
+								<BulletList items={comparison?.rankingRules} />
+							</CollapsiblePanel>
+						)}
+						{(recommendation?.reasons ?? []).length > 0 && (
+							<CollapsiblePanel title="推荐依据" count={recommendation?.reasons?.length}>
+								<BulletList items={recommendation?.reasons} />
+							</CollapsiblePanel>
+						)}
+						{(recommendation?.tradeoffs ?? []).length > 0 && (
+							<CollapsiblePanel title="候选权衡说明" count={recommendation?.tradeoffs?.length}>
+								<BulletList items={recommendation?.tradeoffs} />
+							</CollapsiblePanel>
+						)}
+						{(recommendation?.unknowns ?? []).length > 0 && (
+							<CollapsiblePanel title="未知项（后端明确标注缺少的数据）" count={recommendation?.unknowns?.length}>
+								<BulletList items={recommendation?.unknowns} />
+							</CollapsiblePanel>
+						)}
+						{(recommendation?.manualConfirmation ?? []).length > 0 && (
+							<CollapsiblePanel title="需要人工确认的事项" count={recommendation?.manualConfirmation?.length}>
+								<BulletList items={recommendation?.manualConfirmation} />
+							</CollapsiblePanel>
+						)}
+						{(recommendation?.assumptions ?? []).length > 0 && (
+							<CollapsiblePanel title="模拟假设" count={recommendation?.assumptions?.length}>
+								<BulletList items={recommendation?.assumptions} />
+							</CollapsiblePanel>
+						)}
+						{(decision.evidenceNotes ?? []).length > 0 && (
+							<CollapsiblePanel title="补充依据明细" count={decision.evidenceNotes?.length}>
+								<BulletList items={decision.evidenceNotes} />
+							</CollapsiblePanel>
+						)}
+					</div>
+				</Section>
+			) : null}
+
+			{(decision.citations ?? []).length > 0 && (
+				<Section title="知识引用" description="引用内容来自后端检索结果，展开查看完整摘录">
+					<div className="space-y-2">
+						{(decision.citations ?? []).map((citation) => (
+							<details key={citation.sourceId} className="rounded-lg border border-[#e2e8f0] bg-[#f8fbfe] px-3 py-2">
+								<summary className="cursor-pointer text-sm font-medium text-[#33506b]">
+									{citation.sourceId} · {citation.title}
+									<span className="ml-2 hidden text-xs font-normal text-[#7a8da1] sm:inline">{citation.excerpt.slice(0, 40)}…</span>
+								</summary>
+								<pre className="mt-2 max-h-[260px] overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-[#33506b]">{citation.excerpt}</pre>
+							</details>
+						))}
 					</div>
 				</Section>
 			)}
 
-			{decision.execution && (
-				<Section title="沙箱执行结果" description="仅演练，不写入真实业务系统">
-					<div className="grid gap-3 sm:grid-cols-4">
-						<Field label="执行 ID" value={<span className="font-mono text-xs">{decision.execution.executionId}</span>} />
-						<Field label="状态" value={<StatusBadge status={decision.execution.status} />} />
-						<Field label="模式" value={decision.execution.mode ?? 'SANDBOX'} />
-						<Field label="真实数据变更" value={decision.execution.realDataMutated ? '是' : '否'} />
-						<Field label="开始时间" value={formatTime(decision.execution.startedAt)} />
-						<Field label="完成时间" value={formatTime(decision.execution.completedAt)} />
-						<Field label="步骤数" value={decision.execution.steps?.length ?? 0} />
+			<Section title="任务与审计详情" description="默认收起；完整标识可复制，审计链接均保留">
+				<details className="rounded-lg border border-[#e2e8f0] bg-[#f8fbfe] px-3 py-2">
+					<summary className="cursor-pointer text-sm font-medium text-[#33506b]">展开完整审计信息</summary>
+					<div className="mt-3 space-y-3">
+						<div className="grid gap-3 sm:grid-cols-2">
+							<Field label="决策任务" value={<CopyId id={decision.taskId} />} />
+							{comparison && <Field label="对比任务" value={<CopyId id={comparison.comparisonId} />} />}
+							<Field label="基线来源" value={comparison?.baselineSource ?? decision.simulation?.baselineSource ?? '—'} />
+							<Field label="基线日期" value={comparison?.asOfDate ?? decision.simulation?.asOfDate ?? '—'} />
+							<Field
+								label="提案状态"
+								value={proposals.length === 0 ? '当前无提案' : `${proposals.length} 条 · ${proposals.map((item) => item.status).join(' / ')}`}
+							/>
+							<Field
+								label="关联方案"
+								value={decision.plan
+									? <span className="inline-flex flex-wrap items-center gap-1"><StatusBadge status={decision.plan.status} /> <CopyId id={decision.plan.planId} /></span>
+									: '尚未生成'}
+							/>
+							<Field
+								label="沙箱执行"
+								value={decision.execution
+									? <span className="inline-flex flex-wrap items-center gap-1"><StatusBadge status={decision.execution.status} /><span className="text-xs">{decision.execution.mode ?? 'SANDBOX'}</span></span>
+									: '尚未执行'}
+							/>
+							{decision.execution && (
+								<Field label="执行 ID" value={<CopyId id={decision.execution.executionId} />} />
+							)}
+							{decision.execution && (
+								<Field label="真实数据变更" value={decision.execution.realDataMutated ? '是' : '否'} />
+							)}
+							{decision.execution && (
+								<Field label="开始时间" value={formatTime(decision.execution.startedAt)} />
+							)}
+							{decision.execution && (
+								<Field label="完成时间" value={formatTime(decision.execution.completedAt)} />
+							)}
+						</div>
+						{decision.plan && (
+							<div className="grid gap-3 sm:grid-cols-4">
+								<Field label="方案标题" value={decision.plan.title} />
+								<Field label="用户选定建议" value={decision.plan.selectedRecommendationId ?? '尚未选择'} />
+								<Field label="创建时间" value={formatTime(decision.plan.createdAt)} />
+								<Field label="状态更新时间" value={formatTime(decision.plan.updatedAt)} />
+							</div>
+						)}
+						<div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+							{decision.plan && (
+								<Link href={`/supply-chain/disposal?planId=${encodeURIComponent(decision.plan.planId)}&taskId=${encodeURIComponent(decision.taskId)}`} className="font-medium text-[#35629d] hover:underline">
+									查看处置方案与执行记录
+								</Link>
+							)}
+							<Link href="/supply-chain/history" className="font-medium text-[#35629d] hover:underline">
+								在任务历史中查看审计记录
+							</Link>
+							<Link href="/supply-chain/history" className="font-medium text-[#35629d] hover:underline">
+								全部任务记录
+							</Link>
+						</div>
 					</div>
-					{decision.execution.disclaimer && (
-						<p className="mt-2 text-xs text-[#7a5a22]">{decision.execution.disclaimer}</p>
-					)}
-				</Section>
-			)}
+				</details>
+			</Section>
 
 			<Section title="待确认提案" description="确认操作需要服务端签发的 contentHash；前端不会自行计算">
 				{proposals.length === 0 ? (
@@ -293,7 +369,7 @@ export function DecisionView({ decision, onChanged }: { decision: DecisionResult
 									<Button
 										size="sm"
 										disabled={proposal.status !== 'PENDING'}
-										onClick={() => setPending({ proposal, kind: 'confirm' })}
+										onClick={() => { if (guardDemo('提案确认')) return; setPending({ proposal, kind: 'confirm' }); }}
 									>
 										确认执行
 									</Button>
@@ -301,7 +377,7 @@ export function DecisionView({ decision, onChanged }: { decision: DecisionResult
 										size="sm"
 										variant="outline"
 										disabled={proposal.status !== 'PENDING'}
-										onClick={() => setPending({ proposal, kind: 'cancel' })}
+										onClick={() => { if (guardDemo('提案取消')) return; setPending({ proposal, kind: 'cancel' }); }}
 									>
 										取消提案
 									</Button>
@@ -338,6 +414,39 @@ export function DecisionView({ decision, onChanged }: { decision: DecisionResult
 
 function BadgeText({ label }: { label: string }) {
 	return <span className="rounded-full border border-[#e2e8f0] bg-white px-2 py-0.5 text-[11px] text-[#33506b]">{label}</span>;
+}
+
+function CollapsiblePanel({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
+	return (
+		<details className="rounded-lg border border-[#e2e8f0] bg-[#f8fbfe] px-3 py-2">
+			<summary className="cursor-pointer text-sm font-medium text-[#33506b]">
+				{title}
+				{typeof count === 'number' && <span className="ml-1.5 text-xs font-normal text-[#7a8da1]">（{count} 条）</span>}
+			</summary>
+			<div className="mt-2">{children}</div>
+		</details>
+	);
+}
+
+function CopyId({ id }: { id: string }) {
+	const [copied, setCopied] = useState(false);
+	return (
+		<span className="inline-flex flex-wrap items-center gap-1.5">
+			<span className="break-all font-mono text-xs text-[#33506b]">{id}</span>
+			<button
+				type="button"
+				className="shrink-0 text-[11px] font-medium text-[#35629d] hover:underline"
+				onClick={() => {
+					void navigator.clipboard.writeText(id).then(
+						() => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
+						() => toast.error('复制失败', { description: '当前浏览器不允许访问剪贴板。' }),
+					);
+				}}
+			>
+				{copied ? '已复制' : '复制'}
+			</button>
+		</span>
+	);
 }
 
 export function SimulationMetrics({ simulation }: { simulation: Simulation }) {
@@ -393,7 +502,7 @@ export function SimulationMetrics({ simulation }: { simulation: Simulation }) {
 				</table>
 			</div>
 			{evidenceChanges.length > 0 && (
-				<details className="mt-3 rounded-lg border border-[#e6eef7] bg-white/55 px-3 py-2" open>
+				<details className="mt-3 rounded-lg border border-[#e6eef7] bg-white/55 px-3 py-2">
 					<summary className="cursor-pointer text-xs font-medium text-[#33506b]">
 						发生变化的风险证据（{evidenceChanges.length}）
 					</summary>

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useUrlParam } from '@/lib/use-url-param';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import { toast } from 'sonner';
 import { Loader2, Play, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -77,6 +78,7 @@ const SCENARIO_LABELS: Record<SimulationScenario, string> = {
 type SimForm = { scenario: SimulationScenario; sku: string; quantity: string; supplierId: string; delayDays: string };
 
 export default function DisposalView() {
+	const guardDemo = useDemoGuard();
 	const linkedTaskId = useUrlParam('taskId') ?? undefined;
 	const initialPlanId = useUrlParam('planId');
 	const demoParam = useUrlParam('demo');
@@ -472,18 +474,17 @@ export default function DisposalView() {
 								</div>
 							)}
 						</div>
-						<Button className="bg-[#35629d] hover:bg-[#264c79]" disabled={simRunning} onClick={runSimulation}>
+						<Button className="bg-[#35629d] hover:bg-[#264c79]" disabled={simRunning} onClick={() => { if (guardDemo('情景模拟')) return; runSimulation(); }}>
 							{simRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
 							运行模拟
 						</Button>
 
 						{simulation && (
 							<div className="space-y-3">
-								<div className="grid gap-2 sm:grid-cols-3">
-									<Metric label="模拟 ID" value={<span className="font-mono text-xs">{simulation.simulationId}</span>} />
+								<div className="grid gap-2 sm:grid-cols-2">
+									<Metric label="模拟 ID" value={<span className="font-mono text-xs" title={simulation.simulationId}>{simulation.simulationId.slice(0, 8)}…</span>} />
 									<Metric label="场景" value={SCENARIO_LABELS[simulation.scenario]} />
-									<Metric label="真实数据变更" value={simulation.realDataMutated ? '是' : '否'} />
-								</div>
+																	</div>
 								<SimulationMetrics simulation={simulation} />
 								<div className="grid gap-2 sm:grid-cols-2">
 									<Input value={planTitle} onChange={(event) => setPlanTitle(event.target.value)} placeholder="处置方案标题" />
@@ -502,7 +503,7 @@ export default function DisposalView() {
 										</label>
 									</div>
 								</div>
-								<Button variant="outline" disabled={planBusy} onClick={savePlan}>
+								<Button variant="outline" disabled={planBusy} onClick={() => { if (guardDemo('方案保存')) return; savePlan(); }}>
 									{planBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
 									保存为处置方案
 								</Button>
@@ -544,8 +545,13 @@ export default function DisposalView() {
 										<span className="text-sm font-medium text-[#1c3048]">{summary.title}</span>
 										<StatusBadge status={summary.status} />
 									</div>
-									<div className="mt-1 text-xs text-[#5a708c]">
-										建议 {summary.recommendationCount} 条 · 风险订单变化 {signed(summary.atRiskOrdersDelta)} · {formatTime(summary.updatedAt)}
+									<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[#5a708c]">
+										<span>
+											{summary.scopeSku ? `SKU ${summary.scopeSku}` : summary.scopeSupplierId ? `供应商 ${summary.scopeSupplierId}` : summary.simulationScenario ? SCENARIO_LABELS[summary.simulationScenario] : '全范围'}
+										</span>
+										<span>建议 {summary.recommendationCount} 条 · 风险订单变化 {signed(summary.atRiskOrdersDelta)}</span>
+										<span>{formatTime(summary.createdAt ?? summary.updatedAt)}</span>
+										<span className="font-mono text-[10px] text-[#8aa2ba]" title={summary.planId}>{summary.planId.slice(0, 8)}…</span>
 									</div>
 								</button>
 							))}
@@ -630,15 +636,16 @@ export default function DisposalView() {
 								<Plus className="mr-1 h-4 w-4" />添加候选
 							</Button>
 						</div>
-						<Button className="bg-[#35629d] hover:bg-[#264c79]" disabled={comparisonBusy} onClick={runComparison}>
+						<Button className="bg-[#35629d] hover:bg-[#264c79]" disabled={comparisonBusy} onClick={() => { if (guardDemo('方案对比')) return; runComparison(); }}>
 							{comparisonBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
 							运行对比
 						</Button>
 						<div className="space-y-1">
 							<p className="text-xs font-medium text-[#5a708c]">最近对比</p>
 							{(comparisonsQuery.data?.items ?? []).map((item) => (
-								<button key={item.comparisonId} className="block w-full truncate rounded px-2 py-1 text-left text-xs text-[#33506b] hover:bg-[#f2f7fc]" onClick={() => fetchComparison(item.comparisonId).then(setComparison).catch((error) => toast.error('加载对比失败', { description: errorMessage(error) }))}>
+								<button key={item.comparisonId} title={item.comparisonId} className="block w-full truncate rounded px-2 py-1 text-left text-xs text-[#33506b] hover:bg-[#f2f7fc]" onClick={() => fetchComparison(item.comparisonId).then(setComparison).catch((error) => toast.error('加载对比失败', { description: errorMessage(error) }))}>
 									{item.title} · {SCENARIO_LABELS[item.scenario]} · {item.candidateCount} 个候选
+									{item.recommendedLabel ? ` · 推荐 ${item.recommendedLabel}` : ''} · {formatTime(item.createdAt)}
 								</button>
 							))}
 						</div>
@@ -772,6 +779,7 @@ function PlanDetail({
 	onRefreshEligibility: () => void;
 }) {
 	const [selectedRecommendation, setSelectedRecommendation] = useState(plan.selectedRecommendationId ?? '');
+	const guardDemo = useDemoGuard();
 	const canExecute = plan.status === 'SELECTED' && eligibility?.eligible === true;
 
 	return (
@@ -817,11 +825,11 @@ function PlanDetail({
 			</div>
 
 			<div className="flex flex-wrap gap-2">
-				<Button size="sm" disabled={busy || !selectedRecommendation || plan.status === 'SELECTED'} onClick={() => onSelect(selectedRecommendation)}>
+				<Button size="sm" disabled={busy || !selectedRecommendation || plan.status === 'SELECTED'} onClick={() => { if (guardDemo('方案确认')) return; onSelect(selectedRecommendation); }}>
 					确认选用
 				</Button>
-				<Button size="sm" variant="outline" disabled={busy || plan.status === 'PENDING_CONFIRMATION'} onClick={onReopen}>退回待确认</Button>
-				<Button size="sm" variant="outline" disabled={busy || plan.status === 'REJECTED'} onClick={onReject}>标记不采用</Button>
+				<Button size="sm" variant="outline" disabled={busy || plan.status === 'PENDING_CONFIRMATION'} onClick={() => { if (guardDemo('方案状态变更')) return; onReopen(); }}>退回待确认</Button>
+				<Button size="sm" variant="outline" disabled={busy || plan.status === 'REJECTED'} onClick={() => { if (guardDemo('方案状态变更')) return; onReject(); }}>标记不采用</Button>
 			</div>
 
 			{plan.simulation && <SimulationMetrics simulation={plan.simulation} />}
@@ -872,7 +880,7 @@ function PlanDetail({
 					<LoadingState compact label="校验中…" />
 				)}
 				<div className="mt-3">
-					<Button size="sm" className="bg-[#35629d] hover:bg-[#264c79]" disabled={!canExecute || executionBusy} onClick={onExecute}>
+					<Button size="sm" className="bg-[#35629d] hover:bg-[#264c79]" disabled={!canExecute || executionBusy} onClick={() => { if (guardDemo('沙箱执行')) return; onExecute(); }}>
 						{executionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
 						开始沙箱执行
 					</Button>
@@ -957,6 +965,7 @@ export function ComparisonResult({
 	savingPlan: boolean;
 }) {
 	const sampleSimulation = comparison.candidates.find((candidate) => candidate.simulation)?.simulation;
+	const guardDemo = useDemoGuard();
 	const ruleVersion = sampleSimulation?.ruleVersion ?? 'RISK_RULES_V1';
 	const simulationStatus = sampleSimulation?.simulationStatus ?? 'SIMULATED';
 	return (
@@ -985,7 +994,7 @@ export function ComparisonResult({
 					<BulletList items={comparison.recommendation.manualConfirmation} empty="" />
 				</div>
 			)}
-			<div className="overflow-x-auto">
+			<div className="hidden md:block">
 				<table className="w-full text-sm">
 					<thead>
 						<tr className="border-b border-[#e2e8f0] text-left text-xs text-[#5a708c]">
@@ -1001,8 +1010,8 @@ export function ComparisonResult({
 						{comparison.rankings.map((ranking) => {
 							const candidate = comparison.candidates.find((item) => item.candidateId === ranking.candidateId);
 							return (
-								<tr key={ranking.candidateId} className="border-b border-[#f1f5f9]">
-									<td className="py-1.5 pr-3">{ranking.label ?? ranking.candidateId}{ranking.recommended ? '（推荐）' : ''}</td>
+								<tr key={ranking.candidateId} className={`border-b border-[#f1f5f9] ${ranking.recommended ? 'bg-[#f0f7fd]' : ''}`}>
+									<td className="py-1.5 pr-3 font-medium">{ranking.label ?? ranking.candidateId}{ranking.recommended ? '（推荐）' : ''}</td>
 									<td className="py-1.5 pr-3">{ranking.rank ?? '不可比'}</td>
 									<td className="py-1.5 pr-3 text-xs text-[#5a708c]">{ranking.parameterSummary ?? '—'}</td>
 									<td className="py-1.5 pr-3 text-xs">{(ranking.keyDeltas ?? []).join('；') || '—'}</td>
@@ -1012,7 +1021,7 @@ export function ComparisonResult({
 											size="sm"
 											variant="outline"
 											disabled={savingPlan || Boolean(candidate?.linkedPlanId)}
-											onClick={() => onSavePlan(comparison.comparisonId, ranking.candidateId, ranking.label ?? ranking.candidateId)}
+											onClick={() => { if (guardDemo('方案保存')) return; onSavePlan(comparison.comparisonId, ranking.candidateId, ranking.label ?? ranking.candidateId); }}
 										>
 											{savingPlan ? '保存中…' : '保存为方案'}
 										</Button>
@@ -1022,6 +1031,31 @@ export function ComparisonResult({
 						})}
 					</tbody>
 				</table>
+			</div>
+			<div className="space-y-2 md:hidden">
+				{comparison.rankings.map((ranking) => {
+					const candidate = comparison.candidates.find((item) => item.candidateId === ranking.candidateId);
+					return (
+						<div key={ranking.candidateId} className={`rounded-xl px-3 py-2.5 ring-1 ${ranking.recommended ? 'bg-[#f0f7fd] ring-[#bcd6ee]' : 'bg-white/60 ring-white/70'}`}>
+							<div className="flex flex-wrap items-center justify-between gap-2">
+								<span className="text-sm font-semibold text-[#1c3048]">{ranking.label ?? ranking.candidateId}{ranking.recommended ? '（推荐）' : ''}</span>
+								<span className="text-xs text-[#5a708c]">排名 {ranking.rank ?? '不可比'}</span>
+							</div>
+							<p className="mt-1 text-xs text-[#5a708c]">{ranking.parameterSummary ?? '—'}</p>
+							{(ranking.keyDeltas ?? []).length > 0 && <p className="mt-1 text-xs text-[#33506b]">{(ranking.keyDeltas ?? []).join('；')}</p>}
+							<div className="mt-2">
+								<Button
+									size="sm"
+									variant="outline"
+									disabled={savingPlan || Boolean(candidate?.linkedPlanId)}
+									onClick={() => { if (guardDemo('方案保存')) return; onSavePlan(comparison.comparisonId, ranking.candidateId, ranking.label ?? ranking.candidateId); }}
+								>
+									{savingPlan ? '保存中…' : '保存为方案'}
+								</Button>
+							</div>
+						</div>
+					);
+				})}
 			</div>
 			<div className="space-y-2">
 				<div className="text-xs font-medium text-[#33506b]">候选证据变化与剩余数据缺口</div>

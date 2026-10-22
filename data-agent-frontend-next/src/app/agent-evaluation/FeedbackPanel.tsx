@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { errorMessage } from '@/lib/api/client';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import {
 	ASSERTION_TYPE_LABELS,
 	FEEDBACK_TYPE_LABELS,
@@ -306,6 +307,7 @@ function DraftEditor({
 	onEnable: () => void;
 	onRun: () => void;
 }) {
+	const guardDemo = useDemoGuard();
 	return (
 		<div className="space-y-4">
 			<div>
@@ -354,10 +356,10 @@ function DraftEditor({
 				<AddAssertion onAdd={onAddAssertion} disabled={draft.status === 'ENABLED'} />
 			</div>
 			<div className="flex flex-wrap gap-2">
-				<Button size="sm" variant="outline" disabled={busy || draft.status === 'ENABLED'} onClick={onSave}>保存草案</Button>
-				<Button size="sm" variant="outline" disabled={busy || draft.status === 'ENABLED'} onClick={onReview}><ShieldCheck className="mr-1 h-4 w-4" />提交审核</Button>
-				<Button size="sm" disabled={busy || draft.status !== 'READY_FOR_REVIEW'} onClick={onEnable}><CheckCircle2 className="mr-1 h-4 w-4" />启用评测案例</Button>
-				<Button size="sm" variant="outline" disabled={busy || !draft.caseId} onClick={onRun}><Play className="mr-1 h-4 w-4" />运行该案例</Button>
+				<Button size="sm" variant="outline" disabled={busy || draft.status === 'ENABLED'} onClick={() => { if (guardDemo('保存草案')) return; onSave(); }}>保存草案</Button>
+				<Button size="sm" variant="outline" disabled={busy || draft.status === 'ENABLED'} onClick={() => { if (guardDemo('提交审核')) return; onReview(); }}><ShieldCheck className="mr-1 h-4 w-4" />提交审核</Button>
+				<Button size="sm" disabled={busy || draft.status !== 'READY_FOR_REVIEW'} onClick={() => { if (guardDemo('启用评测案例')) return; onEnable(); }}><CheckCircle2 className="mr-1 h-4 w-4" />启用评测案例</Button>
+				<Button size="sm" variant="outline" disabled={busy || !draft.caseId} onClick={() => { if (guardDemo('运行该案例')) return; onRun(); }}><Play className="mr-1 h-4 w-4" />运行该案例</Button>
 			</div>
 			{draft.status === 'ENABLED' && (
 				<p className="text-xs text-[#428766]">已启用；只有此时才会出现在评测中心的正式案例目录中。运行结果仍通过既有 Evaluation Center 持久化。</p>

@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { errorMessage } from '@/lib/api/client';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import { cancelTask, fetchTaskEvents, fetchTasks, type AnalysisMode } from '@/lib/api/supplyChain';
 import { StatusBadge, TASK_STATUS_LABELS, formatTime } from '@/components/supply-chain/common';
 
@@ -35,6 +36,7 @@ export default function HistoryPage() {
 	const [pageSize, setPageSize] = useState(8);
 	const [expandedTask, setExpandedTask] = useState<string | null>(null);
 	const [cancellingTask, setCancellingTask] = useState<string | null>(null);
+	const guardDemo = useDemoGuard();
 
 	const tasksQuery = useQuery({
 		queryKey: ['taskHistory', mode, status, page, pageSize],
@@ -70,7 +72,7 @@ export default function HistoryPage() {
 			<PageHeader
 				title="任务记录"
 				breadcrumb="工作台"
-				description="查看风险分析与决策任务的历史状态、执行轨迹和报告入口。分页信息来自后端响应头。"
+				description="风险分析与决策任务的历史状态、报告入口与执行轨迹。"
 				actions={
 					<Button variant="outline" onClick={() => tasksQuery.refetch()} disabled={tasksQuery.isFetching}>
 						<RefreshCw className={`mr-2 h-4 w-4 ${tasksQuery.isFetching ? 'animate-spin' : ''}`} />
@@ -145,7 +147,7 @@ export default function HistoryPage() {
 											<TableRow key={item.taskId}>
 												<TableCell className="max-w-[360px]">
 													<div className="truncate text-sm text-[#1c3048]" title={item.question}>{item.question || '—'}</div>
-													<div className="font-mono text-[11px] text-[#8aa2ba]">{item.taskId}</div>
+													<div className="font-mono text-[11px] text-[#8aa2ba]" title={item.taskId}>{item.taskId.slice(0, 8)}…</div>
 													{item.error && <div className="mt-0.5 text-xs text-[#8f3b45]">{item.error}</div>}
 												</TableCell>
 												<TableCell>
@@ -174,7 +176,7 @@ export default function HistoryPage() {
 																size="sm"
 																variant="outline"
 																disabled={cancellingTask === item.taskId}
-																onClick={() => void cancel(item.taskId)}
+																onClick={() => { if (guardDemo('任务取消')) return; void cancel(item.taskId); }}
 															>
 																{cancellingTask === item.taskId ? '取消中…' : '取消任务'}
 															</Button>
@@ -197,7 +199,7 @@ export default function HistoryPage() {
 							{expandedTask && (
 								<div className="rounded-lg border border-[#e2e8f0] bg-[#f8fbfe] p-3">
 									<div className="mb-2 flex items-center justify-between">
-										<p className="text-sm font-medium text-[#33506b]">执行轨迹 · {expandedTask}</p>
+										<p className="text-sm font-medium text-[#33506b]" title={expandedTask}>执行轨迹 · {expandedTask.slice(0, 8)}…</p>
 										{eventsQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-[#35629d]" />}
 									</div>
 									{eventsQuery.isError ? (

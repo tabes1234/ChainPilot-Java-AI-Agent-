@@ -32,7 +32,7 @@ export function SectionHeading({
 	return (
 		<div className={cn('mb-3 flex flex-wrap items-start justify-between gap-2', className)}>
 			<div className="min-w-0">
-				<h2 className="text-[15px] font-semibold tracking-[-0.01em] text-[#233448]">{title}</h2>
+				<h2 className="text-[17px] font-semibold tracking-[-0.01em] text-[#233448]">{title}</h2>
 				{description && <p className="mt-0.5 text-xs text-[#6a7d91]">{description}</p>}
 			</div>
 			{actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -44,8 +44,8 @@ export function SectionHeading({
 export function InlineStat({ label, value }: { label: string; value: React.ReactNode }) {
 	return (
 		<div className="flex min-w-[96px] flex-col gap-0.5 px-1">
-			<span className="text-[11px] font-medium tracking-wide text-[#7a8da1]">{label}</span>
-			<span className="text-[17px] font-semibold leading-tight text-[#233448]">{value}</span>
+			<span className="text-[12.5px] font-medium tracking-wide text-[#7a8da1]">{label}</span>
+			<span className="text-[19px] font-semibold leading-tight text-[#233448]">{value}</span>
 		</div>
 	);
 }

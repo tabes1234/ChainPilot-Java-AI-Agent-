@@ -301,7 +301,7 @@ function RunListItem({ item, selected, onSelect }: { item: ObservabilityRunSumma
 			<div className="flex flex-wrap items-start justify-between gap-1.5">
 				<div className="min-w-0 flex-1">
 					<div className="line-clamp-2 text-sm font-medium text-[#1c3048]">{item.question || '未记录问题'}</div>
-					<div className="mt-0.5 font-mono text-[10px] text-[#8aa2ba]">{item.taskId}</div>
+					<div className="mt-0.5 font-mono text-[10px] text-[#8aa2ba]" title={item.taskId}>{item.taskId.slice(0, 8)}…</div>
 				</div>
 				<ChevronRight className="mt-1 h-4 w-4 shrink-0 text-[#8aa2ba]" />
 			</div>
@@ -336,7 +336,7 @@ function RunDetail({ detail }: { detail: ObservabilityRunDetail }) {
 							{narrative.fallbackUsed && <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">确定性降级</Badge>}
 						</div>
 						<h2 className="mt-2 line-clamp-2 text-[17px] font-semibold text-[#1c3048]">{run.question || '未记录问题'}</h2>
-						<div className="mt-1 font-mono text-[11px] text-[#8aa2ba]">{run.taskId}</div>
+						<div className="mt-1 font-mono text-[11px] text-[#8aa2ba]" title={run.taskId}>{run.taskId.slice(0, 8)}…</div>
 					</div>
 					<div className="flex flex-wrap gap-1.5">
 						{links.reportAvailable && (
@@ -514,7 +514,7 @@ function TimelineRow({ event }: { event: TimelineItem }) {
 function EvaluationLinkRow({ link }: { link: EvaluationTaskReference }) {
 	return (
 		<Link href={`/agent-evaluation?runId=${encodeURIComponent(link.runId)}`} className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg border border-[#e6eef7] bg-white/45 px-3 py-2 text-xs text-[#33506b] hover:bg-[#f7fbfe]">
-			<span className="font-mono">{link.runId}</span>
+			<span className="font-mono" title={link.runId}>{link.runId.slice(0, 8)}…</span>
 			<span className="text-[#5a708c]">{link.caseName ?? link.caseId} · {link.caseStatus ?? '—'} · {link.mode ?? '—'}</span>
 			<ExternalLink className="h-3.5 w-3.5" />
 		</Link>

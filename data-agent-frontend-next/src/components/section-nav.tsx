@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { visibleNavItems } from '@/lib/demo-mode';
 
 const GROUPS: Record<'knowledge' | 'system', { label: string; href: string }[]> = {
 	knowledge: [
@@ -21,7 +22,7 @@ const GROUPS: Record<'knowledge' | 'system', { label: string; href: string }[]> 
 /** Light cross-navigation inside a business area; routes and APIs stay independent. */
 export function SectionNav({ group }: { group: 'knowledge' | 'system' }) {
 	const pathname = usePathname();
-	const items = GROUPS[group];
+	const items = visibleNavItems(GROUPS[group]);
 	return (
 		<nav className="-mt-1 flex flex-wrap items-center gap-1" aria-label={group === 'knowledge' ? '知识管理导航' : '系统配置导航'}>
 			{items.map((item) => {

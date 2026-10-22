@@ -7,20 +7,22 @@ import { ChevronLeft, ChevronRight, PanelLeftClose, Radar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { NAV_ITEMS, isNavItemActive } from '@/lib/navigation';
 import { navGroupTint } from '@/lib/page-theme';
+import { visibleNavItems } from '@/lib/demo-mode';
 
 export type SidebarMode = 'expanded' | 'collapsed';
 
 export function SidebarNav({ onNavigate, compact = false }: { onNavigate?: () => void; compact?: boolean }) {
 	const pathname = usePathname();
+	const items = visibleNavItems(NAV_ITEMS);
 	return (
 		<nav className="space-y-1.5" aria-label="主导航">
-			{NAV_ITEMS.map((item, index) => {
+			{items.map((item, index) => {
 				const active = isNavItemActive(pathname, item);
-				const showGroup = item.group && (index === 0 || NAV_ITEMS[index - 1].group !== item.group);
+				const showGroup = item.group && (index === 0 || items[index - 1].group !== item.group);
 				return (
 					<div key={item.href}>
 						{showGroup && !compact && (
-							<div className={cn('px-3 pb-1.5 text-[11px] font-semibold tracking-[0.14em] text-[#7d8ea1]', index === 0 ? 'pt-0' : 'pt-5')}>
+							<div className={cn('px-3 pb-1.5 text-[12.5px] font-semibold tracking-[0.14em] text-[#7d8ea1]', index === 0 ? 'pt-0' : 'pt-5')}>
 								{item.group}
 							</div>
 						)}
@@ -33,7 +35,7 @@ export function SidebarNav({ onNavigate, compact = false }: { onNavigate?: () =>
 							data-compact={compact || undefined}
 							data-nav-group={navGroupTint(item.group)}
 							className={cn(
-								'cp-nav-item group flex items-center gap-3 rounded-full px-3.5 py-2.5 text-[13.5px] font-medium transition-all duration-200',
+								'cp-nav-item group flex items-center gap-3 rounded-full px-3.5 py-2.5 text-[15px] font-medium transition-all duration-200',
 								active
 									? 'bg-white/80 text-[#2b5583] shadow-[0_1px_2px_rgba(23,42,64,0.05)] ring-1 ring-white/80'
 									: 'text-[#44586d] hover:text-[#1f2a37]',
@@ -64,7 +66,7 @@ export function AppSidebar({
 	return (
 		<aside
 			className={cn(
-				'hidden shrink-0 flex-col py-7 transition-[width,padding] duration-300 ease-out lg:flex',
+				'hidden shrink-0 flex-col py-7 transition-[width,padding] duration-300 ease-out lg:sticky lg:top-0 lg:flex lg:max-h-screen',
 				collapsed ? 'w-[84px] pr-2' : 'w-[248px] pr-5',
 			)}
 			aria-label="侧边导航"
@@ -75,17 +77,17 @@ export function AppSidebar({
 				</span>
 				{!collapsed && (
 					<span className="min-w-0">
-						<span className="block text-[15px] font-semibold leading-tight text-[#1f2a37]">ChainPilot</span>
-						<span className="block text-[11px] font-medium text-[#7d8ea1]">供应链智能决策</span>
+						<span className="block text-[16px] font-semibold leading-tight text-[#1f2a37]">ChainPilot</span>
+						<span className="block text-[12px] font-medium text-[#7d8ea1]">供应链智能决策</span>
 					</span>
 				)}
 			</Link>
 
-			<div className="pb-4">
+			<div className="min-h-0 flex-1 overflow-y-auto pb-4">
 				<SidebarNav compact={collapsed} />
 			</div>
 
-			<div className={cn('mt-2 flex items-center gap-1 border-t border-[var(--cp-line)] pt-3', collapsed && 'flex-col')}>
+			<div className={cn('mt-2 flex shrink-0 items-center gap-1 border-t border-[var(--cp-line)] pt-3', collapsed && 'flex-col')}>
 				<Button
 					variant="ghost"
 					size="sm"

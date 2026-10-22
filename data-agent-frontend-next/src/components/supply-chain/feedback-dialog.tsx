@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { errorMessage } from '@/lib/api/client';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import { FEEDBACK_TYPE_LABELS, submitFeedback, type FeedbackResultType, type FeedbackType } from '@/lib/api/feedback';
 
 const FEEDBACK_ITEMS = Object.fromEntries(Object.entries(FEEDBACK_TYPE_LABELS).map(([value, label]) => [value, label]));
@@ -25,6 +26,7 @@ export function FeedbackDialog({
 	narrativeSource?: string;
 }) {
 	const [open, setOpen] = useState(false);
+	const guardDemo = useDemoGuard();
 	const [type, setType] = useState<FeedbackType>('HELPFUL');
 	const [comment, setComment] = useState('');
 	const [busy, setBusy] = useState(false);
@@ -45,7 +47,7 @@ export function FeedbackDialog({
 
 	return (
 		<>
-			<Button size="sm" variant="outline" onClick={() => { setOpen(true); setSubmitted(false); }}>
+			<Button size="sm" variant="outline" onClick={() => { if (guardDemo('反馈提交')) return; setOpen(true); setSubmitted(false); }}>
 				<MessageSquareText className="mr-1 h-4 w-4" />
 				提交反馈
 			</Button>

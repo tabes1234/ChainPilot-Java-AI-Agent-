@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useUrlParam } from '@/lib/use-url-param';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, Play, RefreshCw, Square } from 'lucide-react';
@@ -60,6 +61,8 @@ export default function DecisionWorkspaceView() {
 		if (!question.trim()) return;
 		void taskRunner.start(question.trim(), 'DECISION');
 	};
+
+	const guardDemo = useDemoGuard();
 
 	const cancel = async () => {
 		const status = await taskRunner.cancel();
@@ -121,7 +124,7 @@ export default function DecisionWorkspaceView() {
 				actions={taskRunner.running ? (
 					<div className="flex flex-wrap items-center gap-2">
 						<Badge variant="secondary" className="gap-1"><Loader2 className="h-3 w-3 animate-spin" />执行中</Badge>
-						<Button size="sm" variant="outline" disabled={taskRunner.cancelling} onClick={() => void cancel()}>
+						<Button size="sm" variant="outline" disabled={taskRunner.cancelling} onClick={() => { if (guardDemo('任务取消')) return; void cancel(); }}>
 							<Square className="mr-1 h-3 w-3" />
 							{taskRunner.cancelling ? '取消中…' : '停止任务'}
 						</Button>
@@ -153,7 +156,7 @@ export default function DecisionWorkspaceView() {
 					<div className="space-y-2">
 						{taskRunner.error && <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-[#8f3b45]">{taskRunner.error}</p>}
 						<div className="flex flex-wrap gap-4 text-xs text-[#5a708c]">
-							<span>任务 {taskRunner.taskId}</span>
+							<span className="font-mono" title={taskRunner.taskId ?? undefined}>任务 {(taskRunner.taskId ?? '').slice(0, 8)}…</span>
 							<span>当前步骤 {taskRunner.task?.currentStep ?? '—'}</span>
 							<span>校验尝试 {taskRunner.task?.validationAttempts ?? '—'}</span>
 							<span>更新 {formatTime(taskRunner.task?.updatedAt)}</span>

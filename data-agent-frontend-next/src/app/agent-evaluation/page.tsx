@@ -36,6 +36,8 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { errorMessage } from '@/lib/api/client';
+import { useDemoGuard } from '@/lib/use-demo-guard';
+import { largestOfflineCaseIds, offlineCaseGroupsByVersion } from '@/lib/evaluation-case-groups';
 import { readinessStateLabel } from '@/lib/api/modelConfig';
 import type {
 	EvaluationCapabilities,
@@ -128,6 +130,7 @@ export default function AgentEvaluationPage() {
 	const runsQuery = useEvaluationRuns(20);
 	const metricsQuery = useEvaluationMetrics(20);
 	const startRun = useStartEvaluationRun();
+	const guardDemo = useDemoGuard();
 
 	const cases = useMemo(() => casesQuery.data ?? [], [casesQuery.data]);
 	const runs = useMemo(() => runsQuery.data ?? [], [runsQuery.data]);
@@ -183,16 +186,22 @@ export default function AgentEvaluationPage() {
 		);
 	};
 
+	const offlineGroups = useMemo(() => offlineCaseGroupsByVersion(cases), [cases]);
+
+	// Selecting every offline case would mix case-set versions and always be rejected by the backend, so
+	// the shortcut selects the largest group that a single run can actually execute.
 	const selectAllOffline = () => {
-		setSelectedIds(cases.filter((item) => item.mode === 'OFFLINE').map((item) => item.id));
+		setSelectedIds(largestOfflineCaseIds(cases));
 	};
 
 	const openConfirm = () => {
 		if (selectedCases.length === 0 || !activeMode) return;
+		if (activeMode === 'AGENT' && guardDemo('真实工作流评测')) return;
 		setRunRequest({ caseIds: selectedCases.map((item) => item.id), mode: activeMode });
 	};
 
 	const requestRerun = (caseId: string, mode: EvaluationMode) => {
+		if (mode === 'AGENT' && guardDemo('真实工作流评测')) return;
 		const definition = cases.find((item) => item.id === caseId);
 		setRunRequest({ caseIds: [caseId], mode, label: definition?.name ?? caseId });
 	};
@@ -233,19 +242,24 @@ export default function AgentEvaluationPage() {
 				breadcrumb="Agent 工程"
 				description="用带版本的评测案例检查供应链 Agent 的确定性行为与真实工作流。运行结果持久化保存，指标只基于已完成的真实运行计算。"
 				actions={
-					<Button
-						variant="outline"
-						onClick={() => {
-							casesQuery.refetch();
-							capabilitiesQuery.refetch();
-							runsQuery.refetch();
-							metricsQuery.refetch();
-						}}
-						disabled={casesQuery.isFetching || runsQuery.isFetching}
-					>
-						<RefreshCw className={cn('mr-2 h-4 w-4', (casesQuery.isFetching || runsQuery.isFetching) && 'animate-spin')} />
-						刷新
-					</Button>
+					<div className="flex flex-wrap gap-2">
+						<Link href="/supply-chain/workflow-evaluation">
+							<Button variant="outline">工作流评测演练</Button>
+						</Link>
+						<Button
+							variant="outline"
+							onClick={() => {
+								casesQuery.refetch();
+								capabilitiesQuery.refetch();
+								runsQuery.refetch();
+								metricsQuery.refetch();
+							}}
+							disabled={casesQuery.isFetching || runsQuery.isFetching}
+						>
+							<RefreshCw className={cn('mr-2 h-4 w-4', (casesQuery.isFetching || runsQuery.isFetching) && 'animate-spin')} />
+							刷新
+						</Button>
+					</div>
 				}
 			/>
 
@@ -353,7 +367,7 @@ export default function AgentEvaluationPage() {
 								清除
 							</Button>
 							<Button size="sm" variant="outline" onClick={selectAllOffline} disabled={(capabilities?.offlineCases ?? 0) === 0}>
-								全选离线案例
+								{offlineGroups.length > 1 ? `全选离线案例（同版本 ${offlineGroups[0].ids.length}）` : '全选离线案例'}
 							</Button>
 							<Button size="sm" onClick={openConfirm} disabled={selectedCases.length === 0}>
 								<Play className="mr-1.5 h-3.5 w-3.5" />

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import {
 	cancelTask,
 	fetchTask,
@@ -26,6 +27,7 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 	const timerRef = useRef<number | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
 	const mountedRef = useRef(true);
+	const labelRef = useRef('任务');
 	const isAbort = (error: unknown) => isApiError(error) && error.status === 0 && error.message === '请求已取消';
 
 	const stopPolling = () => {
@@ -68,6 +70,12 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 			}
 			if (status.status === 'ACCEPTED' || status.status === 'RUNNING') {
 				timerRef.current = window.setTimeout(() => void poll(id), POLL_MS);
+			} else if (status.status === 'COMPLETED') {
+				toast.success(`${labelRef.current}已完成`, { description: '结果与执行事件已就绪，可在下方查看。' });
+			} else if (status.status === 'FAILED') {
+				toast.error(`${labelRef.current}执行失败`, { description: status.error ?? '请查看任务状态中的失败原因。' });
+			} else if (status.status === 'CANCELLED') {
+				toast.info(`${labelRef.current}已取消`);
 			}
 		} catch (pollError) {
 			if (!mountedRef.current || isAbort(pollError)) return;
@@ -118,14 +126,20 @@ export function useAnalysisTask(initialTaskId?: string | null) {
 		setEvents([]);
 		setTask(null);
 		setTaskId(null);
+		labelRef.current = mode === 'DECISION' ? '决策任务' : '分析任务';
 		try {
 			const status = await submitTask(question, mode);
 			if (!mountedRef.current) return;
 			setTaskId(status.taskId);
 			setTask(status);
+			toast.info(`${labelRef.current}已提交`, { description: '后端正在执行，可随时查看任务状态与执行事件。' });
 			void poll(status.taskId);
 		} catch (submitError) {
-			if (mountedRef.current) setError(errorMessage(submitError, '提交任务失败'));
+			if (mountedRef.current) {
+				const message = errorMessage(submitError, '提交任务失败');
+				setError(message);
+				toast.error('任务提交失败', { description: message });
+			}
 		} finally {
 			if (mountedRef.current) setSubmitting(false);
 		}

@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { errorMessage } from '@/lib/api/client';
+import { useDemoGuard } from '@/lib/use-demo-guard';
 import { formatTime } from '@/components/supply-chain/common';
 import {
 	activateModelConfig,
@@ -77,6 +78,7 @@ const PRESETS: Record<string, { baseUrl: string; chatModel: string; embeddingMod
 const MODEL_TYPE_ITEMS: Record<string, string> = { CHAT: '对话模型', EMBEDDING: '向量模型' };
 
 export default function ModelConfigPage() {
+	const guardDemo = useDemoGuard();
 	const queryClient = useQueryClient();
 	const listQuery = useQuery({ queryKey: ['modelConfigs'], queryFn: fetchModelConfigs });
 	const readinessQuery = useQuery({ queryKey: ['modelReadiness'], queryFn: fetchModelReadiness });
@@ -102,12 +104,14 @@ export default function ModelConfigPage() {
 	};
 
 	const openCreate = () => {
+		if (guardDemo('新增配置')) return;
 		setForm({ ...EMPTY_FORM, modelType: tab, completionsPath: tab === 'CHAT' ? '/chat/completions' : '', embeddingsPath: tab === 'EMBEDDING' ? '/embeddings' : '' });
 		setFormError(null);
 		setEditorOpen(true);
 	};
 
 	const openEdit = (config: ModelConfig) => {
+		if (guardDemo('编辑配置')) return;
 		setForm({
 			id: config.id,
 			provider: config.provider ?? 'custom',
@@ -374,13 +378,13 @@ export default function ModelConfigPage() {
 													<Button variant="ghost" size="icon" title="编辑" aria-label="编辑" onClick={() => openEdit(config)}>
 														<Pencil className="h-4 w-4" />
 													</Button>
-													<Button variant="ghost" size="icon" title="激活" aria-label="激活" disabled={config.isActive || busyId === config.id} onClick={() => setPendingActivate(config)}>
+													<Button variant="ghost" size="icon" title="激活" aria-label="激活" disabled={config.isActive || busyId === config.id} onClick={() => { if (guardDemo('配置激活')) return; setPendingActivate(config); }}>
 														<Zap className="h-4 w-4 text-[#b38340]" />
 													</Button>
-													<Button variant="ghost" size="sm" disabled={busyId === config.id} onClick={() => { setTestError(null); setPendingTest(config); }}>
+													<Button variant="ghost" size="sm" disabled={busyId === config.id} onClick={() => { if (guardDemo('连接测试')) return; setTestError(null); setPendingTest(config); }}>
 														测试
 													</Button>
-													<Button variant="ghost" size="icon" title="删除" aria-label="删除" disabled={config.isActive} onClick={() => setPendingDelete(config)}>
+													<Button variant="ghost" size="icon" title="删除" aria-label="删除" disabled={config.isActive} onClick={() => { if (guardDemo('配置删除')) return; setPendingDelete(config); }}>
 														<Trash2 className="h-4 w-4 text-[#b9575c]" />
 													</Button>
 												</div>

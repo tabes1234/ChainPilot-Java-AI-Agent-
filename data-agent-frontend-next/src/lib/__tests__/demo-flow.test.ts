@@ -19,9 +19,9 @@ describe('guided demo scenario', () => {
 		expect(DEMO_SCENARIO.simulationSku).toBe('SKU-MCU-001');
 	});
 
-	it('wires the home CTA and all three existing workbench pages', () => {
-		expect(home).toContain('/supply-chain?demo=supplier-delay');
-		expect(home).toContain('开始体验示例场景');
+	it('keeps the home page brand-only while workbench pages stay wired', () => {
+		expect(home).not.toContain('/supply-chain?demo=supplier-delay');
+		expect(home).not.toContain('示例场景可一键运行');
 		expect(analysis).toContain('DemoBanner');
 		expect(analysis).toContain('继续：方案决策');
 		expect(analysis).toContain('DEMO_SCENARIO.question');

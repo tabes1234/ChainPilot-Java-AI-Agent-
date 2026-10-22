@@ -4,6 +4,21 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Global readability scale: one notch larger than Tailwind defaults so body text,
+   nav, forms, tables and buttons all grow together without per-page overrides. */
+@theme {
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: calc(1.45 / 0.8125);
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: calc(1.5 / 0.9375);
+  --text-base: 1.0625rem;
+  --text-base--line-height: calc(1.6 / 1.0625);
+  --text-lg: 1.1875rem;
+  --text-lg--line-height: calc(1.4 / 1.1875);
+  --text-xl: 1.3125rem;
+  --text-xl--line-height: calc(1.3 / 1.3125);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -160,6 +175,8 @@
 
 body {
   font-family: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.6;
   color: var(--cp-ink);
   background-color: var(--cp-canvas);
   -webkit-font-smoothing: antialiased;
@@ -259,85 +276,6 @@ body {
   0% { transform: translate3d(0, 2vh, 0) scale(1); opacity: 0.55; }
   52% { transform: translate3d(-6vw, -7vh, 0) scale(1.09); opacity: 0.92; }
   100% { transform: translate3d(5vw, -3vh, 0) scale(1.01); opacity: 0.55; }
-}
-
-/* Home slogan: a quiet staggered reveal with a slow gradient sheen. */
-.home-slogan__line {
-  display: block;
-  width: fit-content;
-  max-width: 100%;
-}
-.home-slogan__phrase {
-  display: inline-block;
-  opacity: 0;
-  filter: blur(6px);
-  transform: translateY(14px);
-  animation: home-slogan-in 900ms var(--cp-ease) both;
-  animation-delay: calc(80ms + var(--slogan-index, 0) * 110ms);
-  will-change: opacity, transform, filter;
-}
-.home-slogan__line--second .home-slogan__phrase {
-  animation-delay: calc(420ms + var(--slogan-index, 0) * 110ms);
-}
-.home-slogan__text {
-  display: inline-block;
-  background-image: linear-gradient(100deg, #2f6ba3 0%, #4d7fae 34%, #5f6bb0 68%, #3f8b88 100%);
-  background-size: 220% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  animation: home-slogan-sheen 14s ease-in-out infinite;
-}
-.home-slogan__line--second .home-slogan__text {
-  animation-delay: -4s;
-}
-@keyframes home-slogan-in {
-  from { opacity: 0; filter: blur(6px); transform: translateY(14px); }
-  to { opacity: 1; filter: blur(0); transform: translateY(0); }
-}
-@keyframes home-slogan-sheen {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-}
-
-/* Home intro: the whole paragraph carries a slow, low-saturation colour flow. */
-.home-intro {
-  color: #405d78;
-  text-wrap: pretty;
-}
-.home-intro__key {
-  font-weight: 500;
-}
-@supports ((background-clip: text) or (-webkit-background-clip: text)) {
-  .home-intro {
-    background-image: linear-gradient(
-      102deg,
-      #2f5f86 0%,
-      #3a7086 20%,
-      #3b746d 40%,
-      #5a6186 60%,
-      #406b8f 80%,
-      #2f5f86 100%
-    );
-    background-repeat: no-repeat;
-    background-size: 300% 100%;
-    background-position: 0% 50%;
-    background-clip: text;
-    -webkit-background-clip: text;
-    color: transparent;
-    -webkit-text-fill-color: transparent;
-    animation: home-intro-flow 22s ease-in-out infinite alternate;
-  }
-  .home-intro::selection {
-    background: rgba(83, 116, 153, 0.18);
-    color: #1f2a37;
-    -webkit-text-fill-color: #1f2a37;
-  }
-}
-@keyframes home-intro-flow {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 55% 50%; }
-  100% { background-position: 100% 50%; }
 }
 
 /* Page shell + route transition */
@@ -509,14 +447,6 @@ button:focus-visible,
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .cp-aurora__glow { animation: none; opacity: 0.7; transform: none; }
-  .home-slogan__text { animation: none; background-position: 0% 50%; }
-  .home-slogan__phrase { animation: none; opacity: 1; filter: none; transform: none; }
-  .home-intro {
-    animation: none;
-    background-image: none;
-    color: #405d78;
-    -webkit-text-fill-color: #405d78;
-  }
   .cp-page-enter { animation: none; }
   .cp-skeleton { animation: none; }
   *,
@@ -720,4 +650,127 @@ button:focus-visible,
 .cp-nav-item[data-nav-group="engineering"] {
   --cp-nav-hover: linear-gradient(95deg, rgba(110, 150, 180, 0.2), rgba(110, 150, 180, 0.04));
   --cp-nav-icon: #3f6f83;
+}
+
+/* ── Brand landing & demo studio ─────────────────────────────────────
+   Restored brand scheme: #35629d blue flowing into teal (#3f8b88),
+   matching the historical slogan gradient and sidebar logo mark. */
+.cp-hero-title {
+  background: linear-gradient(
+    100deg,
+    #35629d 0%,
+    #4d7fae 30%,
+    #5e9fb4 58%,
+    #3f8b88 86%,
+    #35629d 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: cp-hero-flow 16s ease-in-out infinite alternate;
+}
+@keyframes cp-hero-flow {
+  from { background-position: 0% 0; }
+  to { background-position: 100% 0; }
+}
+
+/* Subtitle: a quieter companion flow in the same blue→teal family.
+   Slower and lower-contrast than the headline so the two motions
+   never compete; text stays readable and copyable throughout. */
+.cp-hero-subtitle {
+  background-image: linear-gradient(
+    100deg,
+    #33506b 0%,
+    #35629d 32%,
+    #3e8e86 58%,
+    #33506b 84%
+  );
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: cp-hero-flow 24s ease-in-out infinite alternate;
+}
+.cp-hero-subtitle::selection {
+  background: rgba(53, 98, 157, 0.16);
+  color: #1f2a37;
+  -webkit-text-fill-color: #1f2a37;
+}
+
+.cp-fade-up {
+  animation: cp-fade-up 640ms var(--cp-ease) both;
+}
+@keyframes cp-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cp-stagger > * {
+  animation: cp-fade-up 640ms var(--cp-ease) both;
+}
+.cp-stagger > *:nth-child(1) { animation-delay: 40ms; }
+.cp-stagger > *:nth-child(2) { animation-delay: 110ms; }
+.cp-stagger > *:nth-child(3) { animation-delay: 180ms; }
+.cp-stagger > *:nth-child(4) { animation-delay: 250ms; }
+.cp-stagger > *:nth-child(5) { animation-delay: 320ms; }
+.cp-stagger > *:nth-child(6) { animation-delay: 390ms; }
+.cp-stagger > *:nth-child(7) { animation-delay: 460ms; }
+.cp-stagger > *:nth-child(8) { animation-delay: 530ms; }
+.cp-stagger > *:nth-child(9) { animation-delay: 600ms; }
+
+.cp-glow-card {
+  transition:
+    transform 240ms var(--cp-ease),
+    box-shadow 240ms var(--cp-ease),
+    border-color 240ms var(--cp-ease),
+    background-color 240ms var(--cp-ease);
+}
+.cp-glow-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(53, 98, 157, 0.32);
+  box-shadow:
+    0 20px 46px -26px rgba(53, 98, 157, 0.34),
+    inset 0 0 0 1px rgba(94, 159, 180, 0.18);
+}
+
+.cp-cta-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 11px 22px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(100deg, #35629d, #3e7f96 55%, #3f8b88);
+  background-size: 160% 100%;
+  box-shadow: 0 14px 30px -16px rgba(53, 98, 157, 0.5);
+  transition: background-position 320ms var(--cp-ease), box-shadow 240ms var(--cp-ease), transform 160ms var(--cp-ease);
+}
+.cp-cta-primary:hover {
+  background-position: 100% 0;
+  box-shadow: 0 18px 36px -16px rgba(53, 98, 157, 0.6);
+}
+.cp-cta-primary:active {
+  transform: scale(0.985);
+}
+.cp-cta-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 11px 22px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #31446b;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(31, 48, 70, 0.12);
+  transition: border-color 200ms var(--cp-ease), color 200ms var(--cp-ease), box-shadow 200ms var(--cp-ease), background-color 200ms var(--cp-ease);
+}
+.cp-cta-secondary:hover {
+  color: #35629d;
+  border-color: rgba(53, 98, 157, 0.4);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 26px -18px rgba(53, 98, 157, 0.45);
 }

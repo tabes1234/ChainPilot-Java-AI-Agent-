@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { errorMessage, friendlyErrorMessage } from '@/lib/api/client';
-import { fetchOrders, fetchSuppliers, fetchInventory, fetchReport, fetchTasks, type InventoryItem, type RiskLevel } from '@/lib/api/supplyChain';
+import { fetchOrders, fetchSuppliers, fetchInventory, fetchReport, fetchTasks, fetchSimulationBaseline, type InventoryItem, type RiskLevel } from '@/lib/api/supplyChain';
 import { ReportView } from '@/components/supply-chain/report-view';
 import { DemoBanner } from '@/components/supply-chain/demo-banner';
 import { DEMO_SCENARIO, isDemoScenario } from '@/lib/demo-scenario';
@@ -51,6 +51,7 @@ export default function AnalysisView() {
 	const ordersQuery = useQuery({ queryKey: ['supplyChainOrders'], queryFn: () => fetchOrders() });
 	const suppliersQuery = useQuery({ queryKey: ['supplyChainSuppliers'], queryFn: fetchSuppliers });
 	const inventoryQuery = useQuery({ queryKey: ['supplyChainInventory'], queryFn: () => fetchInventory() });
+	const baselineQuery = useQuery({ queryKey: ['simulationBaseline'], queryFn: fetchSimulationBaseline, staleTime: 30_000 });
 	const recentTasksQuery = useQuery({
 		queryKey: ['analysisTasks', 'recent'],
 		queryFn: () => fetchTasks({ page: 1, pageSize: 5, mode: 'ANALYSIS' }),
@@ -88,8 +89,10 @@ export default function AnalysisView() {
 	}, [orders, riskFilter, orderKeyword]);
 
 	const nonLowOrders = orders.filter((item) => item.riskLevel !== 'LOW').length;
-	const nonLowSuppliers = suppliers.filter((item) => item.riskLevel !== 'LOW').length;
-	const shortageOrders = orders.filter((item) => item.inventoryShortage > 0).length;
+	const highRiskOrders = orders.filter((item) => item.riskLevel === 'HIGH').length;
+	const shortageUnits = orders.reduce((sum, item) => sum + (item.inventoryShortage > 0 ? item.inventoryShortage : 0), 0);
+	const riskSuppliers = suppliers.filter((item) => item.riskLevel !== 'LOW');
+	const shortInventory = inventory.filter((item) => item.availableToPromise <= 0 || item.onHandQuantity < item.safetyStock);
 
 	const submit = () => {
 		if (!question.trim()) return;
@@ -138,12 +141,63 @@ export default function AnalysisView() {
 
 			{demoMode && <DemoBanner step={1} />}
 
+			<Section title="运行概览" description="以下基线信息全部来自后端实时快照">
+				<div className="flex flex-wrap items-center gap-2">
+					{baselineQuery.isPending ? (
+						<span className="text-xs text-[#7a8da1]">读取基线快照…</span>
+					) : baselineQuery.isError || !baselineQuery.data ? (
+						<span className="text-xs text-[#7a8da1]">基线快照暂不可用</span>
+					) : (
+						<>
+							<Badge variant="outline" className="font-mono text-[11px]">{baselineQuery.data.baselineSource}</Badge>
+							<Badge variant="outline" className="font-mono text-[11px]">{baselineQuery.data.ruleVersion}</Badge>
+							<Badge variant="outline" className="text-[11px]">{baselineQuery.data.simulationStatus}</Badge>
+							<Badge variant="secondary" className="text-[11px]">只读快照</Badge>
+							{baselineQuery.data.asOfDate && <span className="text-xs text-[#5a708c]">数据截止 {baselineQuery.data.asOfDate}</span>}
+						</>
+					)}
+				</div>
+			</Section>
+
 			<div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
 				<Metric label="订单总数" value={ordersQuery.isPending ? '…' : orders.length} />
-				<Metric label="非低风险订单" value={ordersQuery.isPending ? '…' : nonLowOrders} />
-				<Metric label="存在库存缺口" value={ordersQuery.isPending ? '…' : shortageOrders} />
-				<Metric label="非低风险供应商" value={suppliersQuery.isPending ? '…' : nonLowSuppliers} />
+				<Metric label="风险订单" value={ordersQuery.isPending ? '…' : nonLowOrders} hint="非低风险" />
+				<Metric label="高风险订单" value={ordersQuery.isPending ? '…' : highRiskOrders} />
+				<Metric label="缺口总量" value={ordersQuery.isPending ? '…' : shortageUnits} hint="件" />
 			</div>
+
+			{(riskSuppliers.length > 0 || shortInventory.length > 0) && (
+				<Section title="风险对象" description="仅列出后端评估为非低风险的供应商与库存不足的物料；完整列表在下方基线数据中">
+					<div className="grid gap-3 lg:grid-cols-2">
+						<div className="space-y-1.5">
+							<p className="text-xs font-medium text-[#5a708c]">重点供应商</p>
+							{riskSuppliers.slice(0, 4).map((supplier) => (
+								<div key={supplier.supplierId} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/45 px-3 py-2 ring-1 ring-white/60">
+									<div className="min-w-0">
+										<span className="text-sm font-medium text-[#1c3048]">{supplier.name}</span>
+										<span className="ml-2 font-mono text-xs text-[#8aa2ba]">{supplier.supplierId}</span>
+									</div>
+									<RiskBadge level={supplier.riskLevel} />
+								</div>
+							))}
+							{riskSuppliers.length === 0 && <p className="text-sm text-[#5a708c]">暂无非低风险供应商。</p>}
+						</div>
+						<div className="space-y-1.5">
+							<p className="text-xs font-medium text-[#5a708c]">重点物料</p>
+							{shortInventory.slice(0, 4).map((item) => (
+								<div key={item.sku} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/45 px-3 py-2 ring-1 ring-white/60">
+									<div className="min-w-0">
+										<span className="text-sm font-medium text-[#1c3048]">{item.productName ?? item.sku}</span>
+										<span className="ml-2 font-mono text-xs text-[#8aa2ba]">{item.sku}</span>
+									</div>
+									<span className={`text-sm font-semibold ${item.availableToPromise <= 0 ? 'text-[#b9575c]' : 'text-[#b07f2e]'}`}>ATP {item.availableToPromise}</span>
+								</div>
+							))}
+							{shortInventory.length === 0 && <p className="text-sm text-[#5a708c]">暂无库存不足的物料。</p>}
+						</div>
+					</div>
+				</Section>
+			)}
 
 			<Section
 				title="发起分析"
@@ -182,7 +236,11 @@ export default function AnalysisView() {
 						<div className="flex flex-wrap items-center gap-2">
 							<StatusBadge status={taskRunner.task?.status} />
 							{taskRunner.task?.currentStep && <span className="text-xs text-[#5a708c]">{taskRunner.task.currentStep}</span>}
-							{taskRunner.taskId && <span className="font-mono text-[11px] text-[#8aa2ba]">{taskRunner.taskId}</span>}
+							{taskRunner.taskId && (
+								<span className="font-mono text-[11px] text-[#8aa2ba]" title={taskRunner.taskId}>
+									{taskRunner.taskId.slice(0, 8)}…
+								</span>
+							)}
 						</div>
 					}
 				>
@@ -280,6 +338,11 @@ export default function AnalysisView() {
 					</div>
 				}
 			>
+			<details className="group rounded-xl bg-white/40 px-3 py-2 ring-1 ring-white/60">
+				<summary className="cursor-pointer text-[13px] font-medium text-[#33506b]">
+					展开基线明细（订单 {orders.length} · 供应商 {suppliers.length} · 库存 {inventory.length}）
+				</summary>
+				<div className="mt-3">
 				{baselineTab === 'orders' && (
 					<div className="space-y-3">
 						<div className="flex flex-wrap gap-2">
@@ -399,6 +462,8 @@ export default function AnalysisView() {
 						</div>
 					)
 				)}
+			</div>
+			</details>
 			</Section>
 
 			<details className="border-t border-[var(--cp-line)] pt-4">
